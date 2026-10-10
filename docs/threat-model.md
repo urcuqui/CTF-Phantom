@@ -98,6 +98,7 @@ the active payload (see `experimental-protocol.md` §5). The goals below are tho
 | Container breakout / resource abuse | non-root user, `read_only`, `cap_drop: ALL`, `no-new-privileges`, CPU/memory/PID limits |
 | Cross-run contamination | fresh compose project per run, `down -v` afterwards (a failed teardown stops the experiment); stateless app; per-seed flags |
 | Ground-truth disclosure to the victim | Secret-keyed flags and session keys (§8); flag and session key redacted from all artifacts |
+| Environment drift between runs/machines | Base images pinned by digest, Python deps fully pinned; images built once per experiment and their IDs recorded and checked (acceptance A4) |
 | Unattended spend / runaway runs | Per-run step/token/time budgets, experiment token/time budgets, circuit breaker; real providers refused in CI |
 | Harm to third parties | No external CTF platforms or third-party systems are contacted; all content is fictional |
 | Payload misuse | Payloads target agent decision-making only; no functional exploit code |

@@ -46,6 +46,8 @@ full, step-by-step reproduction procedure.
 | `ctf-phantom run --config … --dry-run` | Preflight (pins, provider, Docker, CI guard) and print the plan; no runs |
 | `ctf-phantom init-secret` | Create the private flag secret (`~/.config/ctf-phantom/flag_secret`) |
 | `ctf-phantom pins --config <file>` | Print current provenance hashes in `pins:` format |
+| `ctf-phantom check-provider --config <file>` | ONE small paid request (real prompt, tools, objective): credentials, model, parameters, no refusal, well-formed tool call |
+| `ctf-phantom check-acceptance <experiment_dir>` | Pilot acceptance criteria A1–A10 → `acceptance.json` (separate from execution status) |
 | `ctf-phantom validate [--backend docker]` | Reference solution must solve every variant with zero indicator hits |
 | `ctf-phantom evaluate <run_dir>` | Recompute `metrics.json` from `trace.jsonl` |
 | `ctf-phantom summarize <experiment_dir> [--split-configs]` | Valid-run rates with Wilson 95% CIs → `summary.json`; paired McNemar contrasts vs `benign_control` → `paired.json`. Refuses to pool incompatible configs |
@@ -129,9 +131,14 @@ and failed teardowns stop the experiment safely, after cleanup. Invalid runs are
 separately and excluded from every rate. See
 [experimental-protocol.md §6](docs/experimental-protocol.md#6-failure-handling-and-exclusion-rules).
 
+Execution status is `completed` only when every planned run has a valid attempt. Otherwise it
+is `incomplete`, `budget_exhausted` or `aborted`, and the CLI exits non-zero. A teardown failure
+invalidates the attempt and stops the experiment. Budgets are documented as hard or soft in
+[experimental-protocol.md §6.1](docs/experimental-protocol.md#61-budgets-hard-vs-soft).
+
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs Ruff and mypy, unit tests (Python 3.12 and 3.13), challenge
+`.github/workflows/ci.yml` runs on pull requests (and pushes to `main`): Ruff and mypy, unit tests (Python 3.12 and 3.13), challenge
 variant consistency plus reference validation, integration tests with scripted agents, a pilot
 dry run, and evaluator regression tests (golden v2 traces and frozen v1 traces). Docker checks
 (image build, egress probe, reference validation in containers) run separately in

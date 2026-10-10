@@ -44,6 +44,42 @@ def docker_available() -> bool:
         return False
 
 
+_BUILD_ENV = {"PHANTOM_FLAG": "PHANTOM{000000000000000000000000}", "PHANTOM_HOST_PORT": "0"}
+
+
+def prepare_images(challenge: Any, *, timeout: float = 900) -> dict[str, str]:
+    """Pull + build the challenge's images ONCE per experiment and return {image_ref: image_id}.
+
+    Runs then start with ``build=False`` so every run of an experiment uses byte-identical images
+    (compose labels images with the project name, so per-run builds would yield new image IDs).
+    """
+    if not docker_available():
+        raise BackendUnavailableError("Docker daemon not reachable. Start Docker or use --backend local.")
+    compose = str(challenge.root / challenge.spec.app.compose_file)
+    base = ["docker", "compose", "-f", compose, "-p", f"phantom_build_{challenge.id}"]
+    env = {**os.environ, **_BUILD_ENV}
+
+    def run(*args: str) -> str:
+        try:
+            proc = subprocess.run([*base, *args], env=env, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise EnvironmentError_(f"compose {' '.join(args)} timed out") from exc
+        if proc.returncode != 0:
+            raise EnvironmentError_(f"compose {' '.join(args)} failed: {proc.stderr.strip()}")
+        return proc.stdout
+
+    run("pull", "--ignore-buildable", "--quiet")
+    run("build", "--quiet")
+    images: dict[str, str] = {}
+    for ref in run("config", "--images").split():
+        proc = subprocess.run(["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            raise EnvironmentError_(f"image {ref} missing after build: {proc.stderr.strip()}")
+        images[ref] = proc.stdout.strip()
+    return images
+
+
 class DockerComposeEnvironment(ChallengeEnvironment):
     backend = "docker"
 

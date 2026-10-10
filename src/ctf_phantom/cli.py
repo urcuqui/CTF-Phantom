@@ -26,6 +26,7 @@ from ctf_phantom.config import ExperimentConfig, apply_overrides, load_dotenv, l
 from ctf_phantom.evaluation import (
     IncompatibleRunsError,
     RunMetrics,
+    check_acceptance,
     evaluate_trace,
     paired_comparisons,
     summarize,
@@ -36,6 +37,7 @@ from ctf_phantom.runner import (
     execute_experiment,
     experiment_dir,
     preflight,
+    probe_provider,
     run_order,
 )
 from ctf_phantom.status import ConfigurationError
@@ -44,8 +46,11 @@ app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="CTF-Phantom: adversarial deception of autonomous cybersecurity agents.")
 console = Console()
 
-EXIT_ABORTED = 2
-EXIT_CONFIG = 3
+EXIT_ABORTED = 2        # aborted or budget-exhausted execution; incompatible runs in summarize
+EXIT_CONFIG = 3         # configuration error, nothing executed
+EXIT_INCOMPLETE = 4     # execution finished but planned runs have no valid attempt
+EXIT_REJECTED = 5       # acceptance check rejected the experiment
+EXIT_PROBE_FAILED = 6   # provider readiness probe failed
 
 
 def _fmt_bool(v: bool | None) -> str:
@@ -151,9 +156,7 @@ def run(
         order = run_order(cfg)
         console.print(f"preflight OK. {len(order)} runs planned "
                       f"(max {len(order) * cfg.execution.max_attempts_per_run} attempts).")
-        console.print(f"budgets: per-run steps={cfg.agent.max_steps} tokens={cfg.agent.max_total_tokens} "
-                      f"wall={cfg.agent.max_wall_time_s}s; experiment tokens={cfg.execution.max_experiment_tokens} "
-                      f"wall={cfg.execution.max_experiment_wall_time_s}s")
+        _print_budgets(cfg, len(order))
         console.print("pins: " + json.dumps(current_pins(cfg, ch, secret)))
         console.print("order: " + ", ".join(f"r{r}:{v}" for r, v in order))
         return
@@ -165,10 +168,73 @@ def run(
         raise typer.Exit(EXIT_CONFIG) from None
     if report.results:
         _print_summary([r.metrics for r in report.results], split_configs=True)
-    console.print(f"results: {experiment_dir(cfg)}  status={report.status}"
-                  + (f" ({report.reason})" if report.reason else ""))
-    if report.status == "aborted":
+    console.print(
+        f"results: {experiment_dir(cfg)}\nexecution: status={report.status}"
+        + (f" ({report.reason})" if report.reason else "")
+        + f"; planned={report.planned_runs} attempted={report.attempted_runs} attempts={report.attempts} "
+        f"valid={report.valid_runs} missing_valid={len(report.missing_valid_runs)} "
+        f"retries_exhausted={len(report.exhausted_retries)}"
+    )
+    console.print("[dim]Execution status is not acceptance: run `ctf-phantom check-acceptance <dir>`.[/]")
+    if report.status in ("aborted", "budget_exhausted"):
         raise typer.Exit(EXIT_ABORTED)
+    if report.status == "incomplete":
+        raise typer.Exit(EXIT_INCOMPLETE)
+
+
+def _print_budgets(cfg: ExperimentConfig, planned: int) -> None:
+    a, ex = cfg.agent, cfg.execution
+    console.print("budgets (HARD: never exceeded; SOFT: checked before each request/attempt):")
+    console.print(f"  per run   HARD max_steps={a.max_steps} max_flag_submissions={a.max_flag_submissions}")
+    console.print(f"  per run   SOFT max_total_tokens={a.max_total_tokens} max_wall_time_s={a.max_wall_time_s} "
+                  "(overshoot <= one model request)")
+    console.print(f"  experiment SOFT max_experiment_tokens={ex.max_experiment_tokens} "
+                  f"max_experiment_wall_time_s={ex.max_experiment_wall_time_s} "
+                  "(an attempt starts only if the remaining budget covers its per-run caps)")
+    if ex.max_experiment_tokens and a.max_total_tokens and planned * a.max_total_tokens > ex.max_experiment_tokens:
+        console.print(f"[yellow]warning: worst case {planned} x {a.max_total_tokens} tokens exceeds the experiment "
+                      "token budget; planned runs may be left unattempted[/]")
+    per_run_s = (a.max_wall_time_s or 0) + cfg.environment.startup_timeout_s
+    if ex.max_experiment_wall_time_s and a.max_wall_time_s and planned * per_run_s > ex.max_experiment_wall_time_s:
+        console.print(f"[yellow]warning: worst case {planned} x {per_run_s:.0f}s exceeds the experiment wall-time "
+                      "budget; planned runs may be left unattempted[/]")
+
+
+@app.command("check-provider")
+def check_provider(
+    config: Annotated[Path, typer.Option(help="Experiment YAML.", exists=True)],
+    model: Annotated[str | None, typer.Option(help="Override provider.model.")] = None,
+) -> None:
+    """Send ONE request (real prompt, tools and objective) to validate provider readiness. Small paid call."""
+    load_dotenv()
+    cfg = apply_overrides(load_experiment(config), {"provider.model": model})
+    try:
+        result = probe_provider(cfg)
+    except ConfigurationError as exc:
+        console.print(f"[bold red]configuration error:[/] {exc}")
+        raise typer.Exit(EXIT_CONFIG) from None
+    console.print_json(json.dumps(result, default=str))
+    if not result["ok"]:
+        console.print("[bold red]provider probe failed[/] (error, refusal, or no well-formed tool call)")
+        raise typer.Exit(EXIT_PROBE_FAILED)
+    console.print("[green]provider ready[/]")
+
+
+@app.command("check-acceptance")
+def check_acceptance_cmd(exp_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False)]) -> None:
+    """Evaluate pilot acceptance criteria A1-A10 from artifacts; write acceptance.json."""
+    result = check_acceptance(exp_dir)
+    (exp_dir / "acceptance.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    table = Table(title=f"Acceptance: {result['verdict']}")
+    for col in ("id", "status", "criterion"):
+        table.add_column(col)
+    for c in result["criteria"]:
+        color = {"pass": "green", "fail": "red", "manual": "yellow"}[c["status"]]
+        table.add_row(c["id"], f"[{color}]{c['status']}[/]", c["description"])
+    console.print(table)
+    console.print(f"wrote {exp_dir / 'acceptance.json'} (details per criterion)")
+    if result["verdict"] == "rejected":
+        raise typer.Exit(EXIT_REJECTED)
 
 
 @app.command()

@@ -17,6 +17,7 @@ class RunStatus(StrEnum):
     ISOLATION_FAILURE = "isolation_failure"     # isolation could not be verified (never run agent)
     CONFIGURATION_ERROR = "configuration_error"  # invalid setup; identical on every attempt
     HARNESS_ERROR = "harness_error"             # unexpected exception in the harness itself
+    CLEANUP_FAILURE = "cleanup_failure"         # episode ended but teardown failed: reset not guaranteed
     ABORTED = "aborted"                         # interrupted by the operator
 
 

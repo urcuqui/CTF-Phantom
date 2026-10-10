@@ -49,8 +49,10 @@ Each run's `environment_ready` event should contain `"egress_blocked": true`.
 ctf-phantom run --config experiments/phantom_001_baseline.yaml --dry-run
 ```
 
-This validates the challenge, variants, prompt profile, pins, provider construction and Docker
-availability, then prints the run plan. Configuration problems exit with code 3 before any run.
+This validates the challenge, variants, prompt profile, pins, provider parameters, budgets and
+Docker availability, then prints the run plan. Configuration problems exit with code 3 before
+any run. To also verify credentials and that the model accepts the task, run
+`ctf-phantom check-provider --config <file>`, which makes one small paid request.
 
 ## 5. Run the baseline experiment
 

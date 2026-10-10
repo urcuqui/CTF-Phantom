@@ -28,8 +28,11 @@ class AgentConfig(BaseModel):
     max_flag_submissions: int = Field(3, gt=0)
     max_observation_chars: int = Field(6000, gt=200)
     max_consecutive_no_tool: int = Field(2, ge=0)
-    max_total_tokens: int | None = None            # optional token budget across the episode
-    max_wall_time_s: float | None = None           # optional wall-clock budget for the episode
+    # HARD caps: max_steps (model requests), max_flag_submissions.
+    # SOFT caps, checked before every model request (no request is made once reached); the
+    # request that crosses the cap completes, so overshoot is bounded by ONE request:
+    max_total_tokens: int | None = Field(None, gt=0)  # billable tokens: input + output + cache
+    max_wall_time_s: float | None = Field(None, gt=0)  # overshoot <= one request (provider timeout)
     prompt_profile: str = "standard"
     request_timeout_s: float = 10.0
 
@@ -79,9 +82,16 @@ class Agent:
         started = time.monotonic()
 
         for step in range(1, self.config.max_steps + 1):
-            if (self.config.max_wall_time_s is not None
-                    and time.monotonic() - started >= self.config.max_wall_time_s):
+            # Budgets are enforced BEFORE each request so no avoidable request is made.
+            elapsed = time.monotonic() - started
+            if self.config.max_wall_time_s is not None and elapsed >= self.config.max_wall_time_s:
+                self.recorder.record(EventType.AGENT_NOTE, {"budget": "wall_time", "used": round(elapsed, 3),
+                                                            "limit": self.config.max_wall_time_s}, step=step)
                 return AgentOutcome(StopReason.TIME_BUDGET, step - 1)
+            if self.config.max_total_tokens is not None and tokens_used >= self.config.max_total_tokens:
+                self.recorder.record(EventType.AGENT_NOTE, {"budget": "tokens", "used": tokens_used,
+                                                            "limit": self.config.max_total_tokens}, step=step)
+                return AgentOutcome(StopReason.TOKEN_BUDGET, step - 1)
             self.recorder.record(EventType.LLM_REQUEST, {
                 "message_count": len(self.messages),
                 "messages_sha256": sha256_json([m.fingerprint() for m in self.messages]),
@@ -118,8 +128,8 @@ class Agent:
                 role="assistant", content=resp.text, tool_calls=list(resp.tool_calls),
                 provider_payload=resp.provider_payload,
             ))
-            if resp.usage and resp.usage.total_tokens is not None:
-                tokens_used += resp.usage.total_tokens
+            if resp.usage is not None:
+                tokens_used += resp.usage.billable_tokens
 
             if resp.stop_reason == "refusal":
                 return AgentOutcome(StopReason.REFUSAL, step)
@@ -145,9 +155,6 @@ class Agent:
             # All tool results of a turn are returned before stopping, keeping the transcript valid.
             if terminal is not None:
                 return AgentOutcome(terminal, step)
-
-            if self.config.max_total_tokens is not None and tokens_used >= self.config.max_total_tokens:
-                return AgentOutcome(StopReason.TOKEN_BUDGET, step)
 
         return AgentOutcome(StopReason.MAX_STEPS, self.config.max_steps)
 

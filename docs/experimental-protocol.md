@@ -78,12 +78,18 @@ produces it, and the validator always rejects it. The loader enforces that every
    machine is planned).
 2. `ctf-phantom validate --backend docker`: every variant must be solved by the reference
    script with zero indicator hits, and the egress probe must pass. Abort if it fails.
+   (The probe is validated by a positive control: it detects egress on an unrestricted
+   network.)
 3. Freeze the commit. Traces record `git.commit` and `git.dirty`; reported runs need
    `dirty: false`.
 4. `ctf-phantom run --config <cfg> --dry-run`: preflight (challenge, variants, prompt profile,
    pins, provider construction, Docker availability, CI guard) and print the plan. Nothing is
    executed.
-5. `ctf-phantom run --config <cfg>`. For each planned (repetition, variant) the runner:
+5. Real providers: `ctf-phantom check-provider --config <cfg>` (one small paid request).
+6. `ctf-phantom run --config <cfg>`. Docker images are pulled and built **once** and their
+   IDs recorded in `experiment.json`; runs never rebuild. Base images are pinned by digest
+   and Python dependencies are fully pinned. For each planned (repetition, variant) the
+   runner:
    1. derives the flag and session key from the seed and the private secret;
    2. starts a fresh environment, waits for health, and runs the egress probe;
    3. renders the objective and runs the agent until a stop condition;
@@ -92,8 +98,9 @@ produces it, and the validator always rejects it. The loader enforces that every
       (every attempt, valid or not);
    6. on a recoverable failure, retries the same (repetition, variant) with the same seed, up
       to `execution.max_attempts_per_run`.
-6. `ctf-phantom summarize results/<experiment>` recomputes every metric from the traces and
+7. `ctf-phantom summarize results/<experiment>` recomputes every metric from the traces and
    writes `summary.json` (per variant) and `paired.json` (vs. `benign_control`).
+8. `ctf-phantom check-acceptance results/<experiment>` (pilot criteria → `acceptance.json`).
 
 **Agent stop conditions** (all produce *valid* runs): `flag_correct`, `submissions_exhausted`,
 `terminated`, `max_steps`, `no_tool_calls`, `token_budget`, `time_budget`, `refusal`.
@@ -110,13 +117,42 @@ Every attempt ends with a `run_finished` event carrying a `status`:
 | `isolation_failure` | Egress probe failed; the agent is never started | no | **stop** |
 | `configuration_error` | Invalid credentials, unknown provider/model, bad script, pins mismatch | no | **stop** (most are caught by preflight before any run) |
 | `harness_error` | Unexpected exception in the harness | yes | retry; circuit breaker |
+| `cleanup_failure` | Episode ended but environment teardown failed: the reset guarantee between runs is lost | no | **stop**; the attempt is **invalid** (its trace is kept as evidence) |
 | `aborted` | Operator interrupt | no | **stop** (trace and `experiment.json` still finalised) |
+
+A teardown failure is recorded on top of any primary failure. `cleanup_error` is set,
+`recoverable` becomes false and the experiment stops. `run_finished`, `metrics.json` and
+`manifest.json` always agree on status, validity, fatality and cleanup error (tested).
 
 Additional safety stops:
 - **Circuit breaker:** stop after `execution.max_consecutive_failures` consecutive failed
   attempts.
-- **Budgets:** stop *starting* runs once `execution.max_experiment_tokens` or
-  `max_experiment_wall_time_s` is reached (`status: budget_exhausted`).
+- **Budgets:** see §6.1.
+
+**Execution status** (`experiment.json`) describes execution, not data quality:
+- `completed`: every planned run has a valid attempt;
+- `incomplete`: some planned runs have no valid attempt;
+- `budget_exhausted`: a budget stopped new attempts;
+- `aborted`.
+
+Per-slot outcomes are `valid`, `retries_exhausted`, `failed_fatal`, `attempted_invalid` or
+`not_attempted`. An experiment with missing valid runs is never reported as `completed`.
+**Acceptance** for analysis is a separate check (`ctf-phantom check-acceptance`; see
+[pilot-protocol.md](pilot-protocol.md)).
+
+### 6.1 Budgets: hard vs soft
+
+| Limit | Kind | Enforcement |
+|---|---|---|
+| `agent.max_steps`, `agent.max_flag_submissions` | hard | never exceeded |
+| `agent.max_total_tokens` | soft | billable tokens (input + output + cache), checked **before** each request, so no request is made once reached; overshoot ≤ one request |
+| `agent.max_wall_time_s` | soft | checked before each request; overshoot ≤ one in-flight request |
+| `execution.max_experiment_tokens` | soft | an attempt (including a retry) starts only if the remaining budget ≥ `agent.max_total_tokens`, so no run is truncated by the experiment budget. Requires the per-run cap |
+| `execution.max_experiment_wall_time_s` | soft | an attempt starts only if remaining ≥ `agent.max_wall_time_s` + `environment.startup_timeout_s`. Requires the per-run cap |
+
+Per-run budget stops (`token_budget`, `time_budget`) are valid outcomes. Experiment budget stops
+leave planned runs `not_attempted`; they never produce truncated runs. Preflight rejects
+budgets that cannot be enforced.
 
 **Exclusion rules (pre-registered):**
 
@@ -253,7 +289,8 @@ A result is reportable only if all of the following hold:
 1. Commit frozen; every reported trace has `git.dirty == false`.
 2. `pins:` set for `challenge_hash`, `variant_hashes`, `system_prompt_sha256` and
    `tool_specs_sha256`, and preflight passed. Optionally pin `flag_secret_fingerprint`.
-3. Backend `docker`, with `egress_blocked: true` in every `environment_ready` event.
+3. Backend `docker`, with `egress_blocked: true` in every `environment_ready` event, and every
+   run using the experiment's recorded image IDs.
 4. Provider settings explicit (model ID, effort/temperature, max_tokens). Report every
    provider-reported model string.
 5. All runs in an analysis share one `comparability_key` per model. Summaries are produced by

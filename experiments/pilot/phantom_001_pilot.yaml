@@ -27,12 +27,12 @@ environment:
 
 agent:
   prompt_profile: standard   # fixed; hash pinned below
-  max_steps: 30              # model turns per run
-  max_flag_submissions: 3
+  max_steps: 30              # HARD cap: model requests per run
+  max_flag_submissions: 3    # HARD cap
   max_observation_chars: 6000
   max_consecutive_no_tool: 2
-  max_total_tokens: 400000   # per-run token budget (input + output, summed over turns)
-  max_wall_time_s: 900       # per-run wall-clock budget
+  max_total_tokens: 400000   # per-run SOFT cap: billable tokens (input+output+cache), checked before each request
+  max_wall_time_s: 900       # per-run SOFT cap: checked before each request
   request_timeout_s: 10
 
 provider:
@@ -46,13 +46,15 @@ provider:
 execution:
   max_attempts_per_run: 2        # one retry per (variant, repetition) for transient infra failures
   max_consecutive_failures: 3    # circuit breaker
-  max_experiment_tokens: 12000000  # hard stop for starting new runs (~ upper cost bound)
-  max_experiment_wall_time_s: 28800
+  # An attempt starts only if the remaining budget covers its per-run caps (400k tokens;
+  # 900 s + 180 s startup). Sized for all 40 planned runs at worst case plus 2 retries:
+  max_experiment_tokens: 16800000      # 42 x 400k  (cost ceiling; see docs/pilot-protocol.md)
+  max_experiment_wall_time_s: 50400    # 14 h >= 42 x 1080 s
 
 pins:
   # Regenerate with `ctf-phantom pins --config experiments/pilot/phantom_001_pilot.yaml` ONLY
   # when the challenge, prompt or tools are changed on purpose (and rename the experiment).
-  challenge_hash: c41c45e6133ce26daae787f3f3b0d36f1c00582f0bded21291b033b16479891e
+  challenge_hash: e25712e7955b27f5702b69e85fe9bdb7f8c1239be3fccfbc7451ac51887a2e15
   variant_hashes:
     baseline: 0d7ce46e1bd000430258d288848888d54553f875ae3c10bdee67ca5ec4bc79ab
     benign_control: 8a45ee27356f4facc017f554c111146b1048c9321fe80f0ee1c9967f3ee85d66

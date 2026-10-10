@@ -11,6 +11,7 @@ import pytest
 
 from ctf_phantom import runner as runner_mod
 from ctf_phantom.agent import Agent
+from ctf_phantom.challenges.spec import ScriptStep
 from ctf_phantom.config import ExperimentConfig
 from ctf_phantom.environments import (
     BackendUnavailableError,
@@ -29,7 +30,8 @@ from ctf_phantom.tracing import EventType, read_trace
 
 def _cfg(results: Path, variants: list[str] | None = None, *, reps: int = 1, script: Any = "reference",
          execution: dict[str, Any] | None = None, agent: dict[str, Any] | None = None,
-         provider: dict[str, Any] | None = None, **extra: Any) -> ExperimentConfig:
+         provider: dict[str, Any] | None = None, environment: dict[str, Any] | None = None,
+         **extra: Any) -> ExperimentConfig:
     return ExperimentConfig.model_validate({
         "name": "fail",
         "challenge": "phantom_001",
@@ -37,7 +39,7 @@ def _cfg(results: Path, variants: list[str] | None = None, *, reps: int = 1, scr
         "repetitions": reps,
         "seed": 7,
         "shuffle_variants": False,
-        "environment": {"backend": "local"},
+        "environment": environment or {"backend": "local"},
         "agent": agent or {},
         "execution": execution or {},
         "provider": provider or {"name": "scripted", "model": "t", "script": script},
@@ -120,7 +122,8 @@ def fake_env(monkeypatch: pytest.MonkeyPatch) -> type[_FakeEnv]:
     _FakeEnv.stop_error = None
     _FakeEnv.stops = 0
     monkeypatch.setattr(runner_mod, "build_environment",
-                        lambda backend, challenge, **kw: _FakeEnv(challenge, **kw))
+                        lambda backend, challenge, *, startup_timeout_s, build=True:
+                        _FakeEnv(challenge, startup_timeout_s=startup_timeout_s))
     return _FakeEnv
 
 
@@ -184,9 +187,15 @@ def test_recoverable_failures_continue_with_next_repetition(results_tmp: Path,
     monkeypatch.setattr(runner_mod, "build_provider", _FlakyFactory({1, 2}))
     report = execute_experiment(_cfg(results_tmp, reps=2, execution={"max_attempts_per_run": 2,
                                                                         "max_consecutive_failures": 5}))
-    assert report.status == "completed"
+    # Execution finished, but one planned run has no valid attempt: never reported as "completed".
+    assert report.status == "incomplete"
     assert _statuses(report.results) == ["provider_error", "provider_error", "completed"]
     assert [r.metrics.repetition for r in report.results] == [0, 0, 1]
+    assert (report.planned_runs, report.attempted_runs, report.attempts, report.valid_runs) == (2, 2, 3, 1)
+    assert [(p.repetition, p.outcome) for p in report.exhausted_retries] == [(0, "retries_exhausted")]
+    execution = _experiment_meta(results_tmp)["execution"]
+    assert execution["complete"] is False and execution["invalid_attempts"] == 2
+    assert len(execution["missing_valid_runs"]) == 1 and len(execution["attempt_log"]) == 3
 
 
 def test_circuit_breaker(results_tmp: Path) -> None:
@@ -215,7 +224,7 @@ def test_environment_start_failure_is_recoverable_and_cleaned_up(results_tmp: Pa
                                                              "max_consecutive_failures": 5}))
     assert _statuses(report.results) == ["environment_error", "environment_error"]
     assert fake_env.stops == 2  # cleanup ran for every attempt
-    assert report.status == "completed"  # the run was skipped after retries; nothing fatal
+    assert report.status == "incomplete" and report.valid_runs == 0
     for r in report.results:
         _assert_trace_complete(r.run_dir, "environment_error")
         assert r.metrics.valid is False
@@ -230,13 +239,56 @@ def test_isolation_failure_stops_before_agent_runs(results_tmp: Path, fake_env: 
     assert not any(e.type in (EventType.LLM_REQUEST, EventType.TOOL_CALL) for e in events)
 
 
-def test_cleanup_failure_stops_experiment_but_keeps_valid_run(results_tmp: Path, fake_env: type[_FakeEnv]) -> None:
+def _three_way(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    finished = read_trace(run_dir / "trace.jsonl")[-1].data
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    return finished, metrics, manifest
+
+
+def test_cleanup_failure_after_successful_episode_is_invalid_and_fatal(results_tmp: Path,
+                                                                       fake_env: type[_FakeEnv]) -> None:
     fake_env.stop_error = CleanupError("compose down failed")
     report = execute_experiment(_cfg(results_tmp, reps=3))
     assert report.status == "aborted" and len(report.results) == 1
     (r,) = report.results
-    assert r.status is RunStatus.COMPLETED and r.fatal  # episode is valid evidence, reset is not guaranteed
-    assert r.metrics.valid and r.metrics.challenge_completed and r.metrics.cleanup_error
+    assert r.status is RunStatus.CLEANUP_FAILURE and r.fatal and not r.recoverable
+    assert r.metrics.valid is False and r.metrics.challenge_completed is None
+    assert r.metrics.stop_reason == "flag_correct"  # the episode itself finished; kept as evidence
+    finished, metrics, manifest = _three_way(r.run_dir)
+    for view in (finished, manifest):
+        assert view["status"] == metrics["run_status"] == "cleanup_failure"
+        assert view["valid"] is metrics["valid"] is False
+        assert view["fatal"] is metrics["fatal"] is True
+        assert view["cleanup_error"] == metrics["cleanup_error"] == "CleanupError: compose down failed"
+    assert manifest["recoverable"] is metrics["recoverable_failure"] is False
+    assert report.planned[0].outcome == "failed_fatal"
+    assert [p.outcome for p in report.planned[1:]] == ["not_attempted", "not_attempted"]
+    (row,) = summarize([r.metrics])
+    assert row["runs"] == 0 and row["excluded"] == {"cleanup_failure": 1}
+
+
+def test_cleanup_failure_after_failed_episode_keeps_primary_status(results_tmp: Path,
+                                                                   fake_env: type[_FakeEnv]) -> None:
+    fake_env.start_error = EnvironmentError_("compose up failed")
+    fake_env.stop_error = RuntimeError("docker socket gone")  # any teardown exception counts
+    report = execute_experiment(_cfg(results_tmp, reps=2))
+    (r,) = report.results
+    assert r.status is RunStatus.ENVIRONMENT_ERROR and r.fatal and report.status == "aborted"
+    finished, metrics, manifest = _three_way(r.run_dir)
+    assert finished["status"] == metrics["run_status"] == manifest["status"] == "environment_error"
+    assert finished["cleanup_error"] == metrics["cleanup_error"] == manifest["cleanup_error"]
+    assert finished["recoverable"] is False and finished["fatal"] is True
+
+
+def test_status_validity_agree_for_every_run(results_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_mod, "build_provider", _FlakyFactory({1}))
+    report = execute_experiment(_cfg(results_tmp, ["baseline", "deception"]))
+    for r in report.results:
+        finished, metrics, manifest = _three_way(r.run_dir)
+        assert finished["status"] == metrics["run_status"] == manifest["status"]
+        assert finished["valid"] is metrics["valid"] is manifest["valid"]
+        assert finished["fatal"] is metrics["fatal"] is manifest["fatal"]
 
 
 # ---------------------------------------------------------------------------- harness failures
@@ -264,7 +316,12 @@ def test_keyboard_interrupt_records_aborted_and_reraises(results_tmp: Path, fake
     assert fake_env.stops == 1
     (run_dir,) = [p for p in (results_tmp / "fail").iterdir() if p.is_dir()]
     _assert_trace_complete(run_dir, "aborted")
-    assert _experiment_meta(results_tmp)["status"] == "aborted"
+    meta = _experiment_meta(results_tmp)
+    assert meta["status"] == "aborted"
+    # The interrupted attempt is still recorded as diagnostic evidence.
+    assert len((results_tmp / "fail" / "runs.jsonl").read_text().splitlines()) == 1
+    assert [a["status"] for a in meta["execution"]["attempt_log"]] == ["aborted"]
+    assert len(meta["execution"]["not_attempted"]) == 1
 
 
 # ---------------------------------------------------------------------------- preflight
@@ -301,12 +358,125 @@ def test_matching_pins_pass(results_tmp: Path, secret: Any) -> None:
 
 
 # ---------------------------------------------------------------------------- budgets
-def test_experiment_token_budget_stops_new_runs(results_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+# Reference solution = 5 model calls; with usage (100 in, 10 out) a full run bills 550 tokens.
+@pytest.mark.parametrize(("cap", "runs"), [(1150, 2), (1149, 1), (600, 1), (1700, 3)])
+def test_experiment_token_budget_boundary(results_tmp: Path, monkeypatch: pytest.MonkeyPatch,
+                                          cap: int, runs: int) -> None:
+    """A run starts only if remaining >= per-run cap (600): 1150-550 = 600 starts, 1149-550 does not."""
     monkeypatch.setattr(runner_mod, "build_provider", _FlakyFactory(set(), usage=TokenUsage(100, 10)))
-    report = execute_experiment(_cfg(results_tmp, reps=3, execution={"max_experiment_tokens": 150}))
-    assert report.status == "budget_exhausted" and len(report.results) == 1
-    assert report.results[0].metrics.tokens.total_tokens == 550
-    assert _experiment_meta(results_tmp)["status"] == "budget_exhausted"
+    report = execute_experiment(_cfg(results_tmp, reps=3, agent={"max_total_tokens": 600},
+                                     execution={"max_experiment_tokens": cap}))
+    assert len(report.results) == runs
+    assert all(r.billable_tokens == 550 for r in report.results)
+    total = sum(r.billable_tokens for r in report.results)
+    assert total <= cap  # never crossed by a whole run
+    expected = "completed" if runs == 3 else "budget_exhausted"
+    assert report.status == expected
+    meta = _experiment_meta(results_tmp)
+    assert meta["status"] == expected and meta["tokens_used"] == total
+    if runs < 3:
+        assert len(meta["execution"]["not_attempted"]) == 3 - runs
+
+
+def test_retries_respect_experiment_budget(results_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    factory = _FlakyFactory(set(), usage=TokenUsage(100, 10))
+    script = [{"tool": "http_request", "args": {"method": "GET", "url": "/"}},
+              {"tool": "$PROVIDER_ERROR", "args": {"recoverable": True}}]
+
+    def build(config: ProviderConfig, challenge: Any) -> ScriptedProvider:
+        p = factory(config, challenge)
+        p.steps = [ScriptStep.model_validate(x) for x in script]  # type: ignore[attr-defined]
+        return p
+
+    monkeypatch.setattr(runner_mod, "build_provider", build)
+    report = execute_experiment(_cfg(results_tmp, reps=2, agent={"max_total_tokens": 600},
+                                     execution={"max_experiment_tokens": 700, "max_attempts_per_run": 3,
+                                                "max_consecutive_failures": 9}))
+    # attempt 1 bills 110 -> remaining 590 < 600: no retry is started.
+    assert len(report.results) == 1 and report.status == "budget_exhausted"
+    assert report.planned[0].outcome == "attempted_invalid"
+
+
+def test_cache_tokens_count_toward_budgets(results_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    usage = TokenUsage(input_tokens=10, output_tokens=10, cache_read_input_tokens=80, cache_creation_input_tokens=0)
+    monkeypatch.setattr(runner_mod, "build_provider", _FlakyFactory(set(), usage=usage))
+    report = execute_experiment(_cfg(results_tmp, agent={"max_total_tokens": 200}))
+    (r,) = report.results
+    # 100 billable per call: stops before the 3rd request although input+output is only 40.
+    assert r.metrics.stop_reason == "token_budget" and r.billable_tokens == 200
+    assert r.metrics.tokens.total_tokens == 40  # evaluation schema unchanged (input + output)
+
+
+@pytest.mark.parametrize(("cap", "requests", "stop"), [(220, 2, "token_budget"), (221, 3, "token_budget"),
+                                                         (10_000, 5, "flag_correct")])
+def test_agent_token_budget_is_checked_before_each_request(results_tmp: Path, monkeypatch: pytest.MonkeyPatch,
+                                                           cap: int, requests: int, stop: str) -> None:
+    monkeypatch.setattr(runner_mod, "build_provider", _FlakyFactory(set(), usage=TokenUsage(100, 10)))
+    report = execute_experiment(_cfg(results_tmp, agent={"max_total_tokens": cap}))
+    (r,) = report.results
+    events = read_trace(r.run_dir / "trace.jsonl")
+    assert sum(e.type is EventType.LLM_REQUEST for e in events) == requests
+    assert r.metrics.stop_reason == stop and r.metrics.valid
+    if stop == "token_budget":
+        note = [e for e in events if e.type is EventType.AGENT_NOTE and e.data.get("budget") == "tokens"]
+        assert note and note[0].data["limit"] == cap and r.metrics.steps == requests
+
+
+def test_token_budget_applies_to_turns_without_tool_calls(results_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    factory = _FlakyFactory(set(), usage=TokenUsage(100, 10))
+
+    def build(config: ProviderConfig, challenge: Any) -> ScriptedProvider:
+        p = factory(config, challenge)
+        p.steps = []  # type: ignore[attr-defined]  # every turn: no tool call
+        return p
+
+    monkeypatch.setattr(runner_mod, "build_provider", build)
+    report = execute_experiment(_cfg(results_tmp, agent={"max_total_tokens": 220, "max_consecutive_no_tool": 10}))
+    (r,) = report.results
+    assert r.metrics.stop_reason == "token_budget"
+    assert sum(e.type is EventType.LLM_REQUEST for e in read_trace(r.run_dir / "trace.jsonl")) == 2
+
+
+def test_max_steps_is_hard(results_tmp: Path) -> None:
+    report = execute_experiment(_cfg(results_tmp, agent={"max_steps": 2}))
+    (r,) = report.results
+    assert r.metrics.stop_reason == "max_steps"
+    assert sum(e.type is EventType.LLM_REQUEST for e in read_trace(r.run_dir / "trace.jsonl")) == 2
+
+
+@pytest.mark.parametrize(("elapsed", "blocked"), [(0.0, False), (100.0, False), (100.001, True), (500.0, True)])
+def test_experiment_wall_budget_boundary(results_tmp: Path, elapsed: float, blocked: bool) -> None:
+    # need = agent wall (300) + startup timeout (100) = 400; cap 500 -> starts while elapsed <= 100.
+    cfg = _cfg(results_tmp, agent={"max_wall_time_s": 300}, environment={"backend": "local", "startup_timeout_s": 100},
+               execution={"max_experiment_wall_time_s": 500})
+    assert (runner_mod._budget_block(cfg, 0, elapsed) is not None) is blocked
+
+
+@pytest.mark.parametrize(("agent", "execution", "match"), [
+    ({}, {"max_experiment_tokens": 1000}, "requires agent.max_total_tokens"),
+    ({"max_total_tokens": 2000}, {"max_experiment_tokens": 1000}, "exceeds"),
+    ({}, {"max_experiment_wall_time_s": 1000}, "requires agent.max_wall_time_s"),
+    ({"max_wall_time_s": 990}, {"max_experiment_wall_time_s": 1000}, "worst case"),
+])
+def test_unenforceable_budgets_rejected(results_tmp: Path, agent: dict[str, Any], execution: dict[str, Any],
+                                        match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match):
+        preflight(_cfg(results_tmp, agent=agent, execution=execution))
+
+
+def test_existing_experiment_directory_is_never_reused(results_tmp: Path) -> None:
+    execute_experiment(_cfg(results_tmp))
+    with pytest.raises(ConfigurationError, match="already contains runs"):
+        execute_experiment(_cfg(results_tmp))
+
+
+def test_completed_experiment_reports_full_execution(results_tmp: Path) -> None:
+    report = execute_experiment(_cfg(results_tmp, ["baseline", "deception"], reps=2))
+    assert report.status == "completed" and report.complete
+    ex = _experiment_meta(results_tmp)["execution"]
+    assert (ex["planned_runs"], ex["attempted_runs"], ex["attempts"], ex["valid_runs"]) == (4, 4, 4, 4)
+    assert ex["missing_valid_runs"] == [] and ex["invalid_attempts"] == 0
+    assert "not evaluated" in _experiment_meta(results_tmp)["acceptance"]
 
 
 def test_agent_wall_time_budget_is_a_valid_stop(results_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> None:

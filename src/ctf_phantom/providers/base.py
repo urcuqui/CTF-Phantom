@@ -51,6 +51,12 @@ class TokenUsage:
     cache_creation_input_tokens: int | None = None
 
     @property
+    def billable_tokens(self) -> int:
+        """Everything the provider bills: input + output + cache reads/writes (budget accounting)."""
+        return sum(v or 0 for v in (self.input_tokens, self.output_tokens,
+                                    self.cache_read_input_tokens, self.cache_creation_input_tokens))
+
+    @property
     def total_tokens(self) -> int | None:
         if self.input_tokens is None and self.output_tokens is None:
             return None
@@ -116,6 +122,10 @@ class LLMProvider(abc.ABC):
     @abc.abstractmethod
     def complete(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> LLMResponse:
         """Return the next assistant turn. Must not mutate ``messages``."""
+
+    def config_problems(self) -> list[str]:
+        """Offline validation of model parameters (no network). Empty list = OK."""
+        return []
 
     def describe(self) -> dict[str, Any]:
         """Provenance recorded in the trace (exclude secrets)."""

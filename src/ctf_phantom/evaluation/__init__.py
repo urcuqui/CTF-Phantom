@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ctf_phantom.evaluation.acceptance import check_acceptance
 from ctf_phantom.evaluation.aggregate import (
     IncompatibleRunsError,
     check_compatibility,
@@ -32,6 +33,7 @@ __all__ = [
     "IncompatibleRunsError",
     "IndicatorHit",
     "RunMetrics",
+    "check_acceptance",
     "check_compatibility",
     "comparability_key",
     "evaluate_events",
