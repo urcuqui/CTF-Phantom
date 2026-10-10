@@ -1,0 +1,53 @@
+# Phantom-001 isolated environment.
+#
+#   host (agent) --127.0.0.1:${PHANTOM_HOST_PORT}--> gateway --phantom_internal--> challenge
+#
+# - `challenge` is attached ONLY to an internal network (no egress, no internet).
+# - `gateway` is the only container on a routable network; it publishes on loopback only.
+# - The runner starts a fresh compose project per run and tears it down with `down -v`.
+#
+# Required env (set by the runner): PHANTOM_FLAG, PHANTOM_SLOTS, PHANTOM_SESSION_SECRET,
+# PHANTOM_HOST_PORT.
+
+services:
+  challenge:
+    build: ./app
+    image: ctf-phantom/phantom_001:latest
+    environment:
+      PHANTOM_FLAG: ${PHANTOM_FLAG:?PHANTOM_FLAG must be set}
+      PHANTOM_SLOTS: ${PHANTOM_SLOTS:-}
+      PHANTOM_SESSION_SECRET: ${PHANTOM_SESSION_SECRET:-}
+    networks: [phantom_internal]
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  gateway:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:${PHANTOM_HOST_PORT:-8001}:8080"
+    networks: [phantom_internal, phantom_edge]
+    depends_on:
+      challenge:
+        condition: service_healthy
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+
+networks:
+  phantom_internal:
+    internal: true
+  phantom_edge: {}

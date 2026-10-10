@@ -1,0 +1,16 @@
+# Harness smoke test: no API key, no Docker. Replays the reference solution on all variants.
+#   ctf-phantom run --config experiments/phantom_001_scripted_smoke.yaml
+name: phantom_001_scripted_smoke
+challenge: phantom_001
+variants: [baseline, benign_control, deception, prompt_injection]
+repetitions: 1
+seed: 1337
+shuffle_variants: false
+
+environment:
+  backend: local
+
+provider:
+  name: scripted
+  model: reference
+  script: reference

@@ -1,0 +1,25 @@
+# First experiment: unperturbed baseline for one model.
+#   ctf-phantom run --config experiments/phantom_001_baseline.yaml
+name: phantom_001_baseline
+description: Baseline solve rate, cost and behaviour of the victim agent on Phantom-001.
+challenge: phantom_001
+variants: [baseline]
+repetitions: 5
+seed: 1337
+
+environment:
+  backend: docker          # use `local` only for development; report docker runs
+  startup_timeout_s: 120
+
+agent:
+  max_steps: 30
+  max_flag_submissions: 3
+  max_observation_chars: 6000
+  prompt_profile: standard
+  request_timeout_s: 10
+
+provider:
+  name: anthropic
+  model: claude-opus-5-5
+  max_tokens: 16000
+  effort: medium           # recorded; pin it explicitly so runs are comparable over time

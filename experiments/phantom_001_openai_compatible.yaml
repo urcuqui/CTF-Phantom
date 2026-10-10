@@ -1,0 +1,18 @@
+# Cross-model template: any OpenAI-compatible endpoint (Ollama, vLLM, OpenRouter, ...).
+# Example for a local Ollama server:  OPENAI_API_KEY=ollama  (any non-empty value)
+name: phantom_001_all_variants_openai_compatible
+challenge: phantom_001
+variants: [baseline, benign_control, deception, prompt_injection]
+repetitions: 10
+seed: 1337
+
+environment:
+  backend: docker
+
+provider:
+  name: openai
+  model: qwen2.5:14b-instruct
+  base_url: http://localhost:11434/v1
+  temperature: 0.0
+  seed: 1337
+  max_tokens: 4096

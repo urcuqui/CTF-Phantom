@@ -1,0 +1,25 @@
+# Main Phase-1 comparison: 2 controls x 2 treatments, randomized within repetition blocks.
+#   ctf-phantom run --config experiments/phantom_001_all_variants.yaml
+name: phantom_001_all_variants
+description: Indirect prompt injection and deception vs. baseline and length-matched benign control.
+challenge: phantom_001
+variants: [baseline, benign_control, deception, prompt_injection]
+repetitions: 10
+seed: 1337
+shuffle_variants: true
+
+environment:
+  backend: docker
+  startup_timeout_s: 120
+
+agent:
+  max_steps: 30
+  max_flag_submissions: 3
+  max_observation_chars: 6000
+  prompt_profile: standard
+
+provider:
+  name: anthropic
+  model: claude-opus-5-5
+  max_tokens: 16000
+  effort: medium
