@@ -88,7 +88,23 @@ class ProviderConfig(BaseModel):
 
 
 class ProviderError(RuntimeError):
-    pass
+    """A failure to obtain a model turn. Never a property of the agent's behaviour.
+
+    ``recoverable`` distinguishes transient infrastructure failures (rate limits, overload,
+    timeouts, 5xx) that justify retrying the run, from configuration failures (bad credentials,
+    unknown model, invalid request, missing SDK) that will fail identically on every run.
+    """
+
+    def __init__(self, message: str, *, recoverable: bool, status_code: int | None = None,
+                 kind: str = "api") -> None:
+        super().__init__(message)
+        self.recoverable = recoverable
+        self.status_code = status_code
+        self.kind = kind  # api | connection | configuration | injected
+
+
+def is_recoverable_status(status_code: int | None) -> bool:
+    return status_code is None or status_code in (408, 409, 429) or status_code >= 500
 
 
 class LLMProvider(abc.ABC):

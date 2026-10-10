@@ -8,6 +8,7 @@ challenge container is executed and recorded as evidence of isolation.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -16,9 +17,12 @@ import uuid
 from typing import Any
 
 from ctf_phantom.environments.base import (
+    BackendUnavailableError,
     ChallengeEnvironment,
+    CleanupError,
     EnvironmentError_,
     EnvironmentInfo,
+    IsolationError,
     free_local_port,
 )
 
@@ -54,16 +58,19 @@ class DockerComposeEnvironment(ChallengeEnvironment):
 
     def _compose(self, *args: str, check: bool = True, timeout: float = 300) -> subprocess.CompletedProcess[str]:
         cmd = ["docker", "compose", "-f", str(self.compose_file), "-p", self.project, *args]
-        proc = subprocess.run(cmd, env=self._env, capture_output=True, text=True, timeout=timeout)
+        try:
+            proc = subprocess.run(cmd, env=self._env, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            if args and args[0] == "down":
+                raise CleanupError(f"compose down timed out for project {self.project}") from exc
+            raise EnvironmentError_(f"{' '.join(cmd)} timed out after {timeout}s") from exc
         if check and proc.returncode != 0:
             raise EnvironmentError_(f"{' '.join(cmd)} failed ({proc.returncode}):\n{proc.stderr.strip()}")
         return proc
 
     def start(self, *, flag: str, slots: dict[str, Any], session_secret: str) -> EnvironmentInfo:
-        import json
-
         if not docker_available():
-            raise EnvironmentError_("Docker daemon not reachable. Start Docker or use --backend local.")
+            raise BackendUnavailableError("Docker daemon not reachable. Start Docker or use --backend local.")
         t0 = time.monotonic()
         port = free_local_port()
         self._env = {
@@ -76,30 +83,26 @@ class DockerComposeEnvironment(ChallengeEnvironment):
         up = ["up", "-d", "--wait", "--wait-timeout", str(int(self.startup_timeout_s))]
         if self.build:
             up.append("--build")
-        try:
-            self._compose(*up, timeout=self.startup_timeout_s + 600)
-            base_url = f"http://127.0.0.1:{port}"
-            self.wait_healthy(base_url)
-            details: dict[str, Any] = {
-                "project": self.project,
-                "images": self._image_ids(),
-                "network": "challenge on internal-only network; gateway on 127.0.0.1",
-            }
-            if self.verify_isolation:
-                details["egress_blocked"] = self._egress_blocked()
-                if not details["egress_blocked"]:
-                    raise EnvironmentError_("isolation check failed: challenge container has egress")
-        except Exception:
-            self.stop()
-            raise
+        # No teardown here on failure: callers always call stop() (the runner does so in a
+        # `finally`), which surfaces CleanupError instead of masking it.
+        self._compose(*up, timeout=self.startup_timeout_s + 600)
+        base_url = f"http://127.0.0.1:{port}"
+        self.wait_healthy(base_url)
+        details: dict[str, Any] = {
+            "project": self.project,
+            "images": self._image_ids(),
+            "network": "challenge on internal-only network; gateway on 127.0.0.1",
+        }
+        if self.verify_isolation:
+            details["egress_blocked"] = self._egress_blocked()
+            if not details["egress_blocked"]:
+                raise IsolationError("isolation check failed: challenge container has egress")
         return EnvironmentInfo(self.backend, base_url, round(time.monotonic() - t0, 3), details)
 
     def _image_ids(self) -> dict[str, str]:
         proc = self._compose("images", "--format", "json", check=False)
         if proc.returncode != 0:
             return {}
-        import json
-
         try:
             rows = json.loads(proc.stdout or "[]")
         except json.JSONDecodeError:
@@ -121,6 +124,8 @@ class DockerComposeEnvironment(ChallengeEnvironment):
         if self._env is None:
             return
         try:
-            self._compose("down", "-v", "--remove-orphans", "--timeout", "5", check=False, timeout=120)
+            proc = self._compose("down", "-v", "--remove-orphans", "--timeout", "5", check=False, timeout=120)
         finally:
             self._env = None
+        if proc.returncode != 0:
+            raise CleanupError(f"compose down failed for project {self.project}: {proc.stderr.strip()}")

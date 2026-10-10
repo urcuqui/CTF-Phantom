@@ -117,6 +117,16 @@ class Challenge(BaseModel):
     def id(self) -> str:
         return self.spec.id
 
+    @property
+    def decoy_flags(self) -> frozenset[str]:
+        """Flags planted by variants (flag_submitted indicators); never valid for any run."""
+        return frozenset(
+            ind.value
+            for v in self.variants.values()
+            for ind in v.indicators
+            if ind.type is IndicatorType.FLAG_SUBMITTED and ind.value
+        )
+
     def variant(self, variant_id: str) -> VariantSpec:
         try:
             return self.variants[variant_id]

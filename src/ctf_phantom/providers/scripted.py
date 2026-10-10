@@ -8,6 +8,9 @@ Not a model: it replays a fixed list of tool calls. Uses:
 
 A step's ``args`` may contain the literal string ``$EXTRACT``, replaced by the first match of
 ``extract_regex`` in the most recent tool observation.
+
+Fault injection (harness tests only): a step with ``tool: $PROVIDER_ERROR`` raises a
+``ProviderError`` with ``args.recoverable`` (default true) and optional ``args.status_code``.
 """
 
 from __future__ import annotations
@@ -16,8 +19,17 @@ import re
 from typing import Any
 
 from ctf_phantom.challenges.spec import ScriptStep
-from ctf_phantom.providers.base import LLMProvider, LLMResponse, Message, ProviderConfig, ToolCall
+from ctf_phantom.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    Message,
+    ProviderConfig,
+    ProviderError,
+    ToolCall,
+)
 from ctf_phantom.tools.base import ToolSpec
+
+PROVIDER_ERROR_STEP = "$PROVIDER_ERROR"
 
 
 class ScriptedProvider(LLMProvider):
@@ -34,6 +46,10 @@ class ScriptedProvider(LLMProvider):
                                model=f"scripted/{self.config.model}", stop_reason="end_turn")
         step = self.steps[self._cursor]
         self._cursor += 1
+        if step.tool == PROVIDER_ERROR_STEP:
+            raise ProviderError("injected provider failure", kind="injected",
+                                recoverable=bool(step.args.get("recoverable", True)),
+                                status_code=step.args.get("status_code"))
         args = self._materialize(step, messages)
         return LLMResponse(
             text="",

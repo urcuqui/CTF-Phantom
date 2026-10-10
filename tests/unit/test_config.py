@@ -10,8 +10,10 @@ from ctf_phantom.runner import run_order
 from tests.conftest import ROOT
 
 
-@pytest.mark.parametrize("path", sorted((ROOT / "experiments").glob("*.yaml")), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", sorted((ROOT / "experiments").glob("**/*.yaml")), ids=lambda p: p.name)
 def test_shipped_experiment_configs_are_valid(path: Path, challenge) -> None:  # type: ignore[no-untyped-def]
+    if path.parent.name == "scripts":
+        pytest.skip("scripted policy, not an experiment config")
     cfg = load_experiment(path)
     for vid in cfg.variants:
         challenge.variant(vid)

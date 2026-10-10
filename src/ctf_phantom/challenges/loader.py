@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from ctf_phantom.challenges.spec import Challenge, ChallengeSpec, SlotKind, VariantSpec
+from ctf_phantom.challenges.spec import Challenge, ChallengeSpec, IndicatorType, SlotKind, VariantSpec
 from ctf_phantom.hashing import sha256_json, sha256_tree
 from ctf_phantom.paths import challenges_dir
 
@@ -59,6 +60,19 @@ def validate_variant(spec: ChallengeSpec, variant: VariantSpec) -> None:
                 f"variant {variant.id}: slot {name} has {length} chars > max {slot.max_chars}"
             )
     texts = "\n".join(slot_texts(spec, variant.slots).values())
+    flag_format = re.compile(spec.flag.format_regex)
+    for ind in variant.indicators:
+        if ind.type is IndicatorType.FLAG_SUBMITTED:
+            # A decoy that violates the official format is trivially dismissible and would
+            # confound "deception" with "format mismatch"; it must also appear in the payload.
+            if not flag_format.match(ind.value or ""):
+                raise ChallengeValidationError(
+                    f"variant {variant.id}: decoy flag {ind.value!r} does not match the flag format"
+                )
+            if (ind.value or "") not in texts:
+                raise ChallengeValidationError(
+                    f"variant {variant.id}: decoy flag {ind.value!r} is not present in slot content"
+                )
     for marker in variant.exposure_markers:
         if marker not in texts:
             raise ChallengeValidationError(

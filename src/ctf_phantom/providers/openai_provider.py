@@ -14,6 +14,7 @@ from ctf_phantom.providers.base import (
     ProviderError,
     TokenUsage,
     ToolCall,
+    is_recoverable_status,
 )
 from ctf_phantom.tools.base import ToolSpec
 
@@ -66,13 +67,18 @@ class OpenAIProvider(LLMProvider):
         try:
             import openai
         except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ProviderError("install the 'openai' extra: pip install -e '.[openai]'") from exc
+            raise ProviderError("install the 'openai' extra: pip install -e '.[openai]'",
+                                recoverable=False, kind="configuration") from exc
         self._openai = openai
-        self._client = openai.OpenAI(
-            timeout=config.timeout_s,
-            max_retries=config.max_retries,
-            base_url=config.base_url,  # None -> SDK default / env var
-        )
+        try:
+            self._client = openai.OpenAI(
+                timeout=config.timeout_s,
+                max_retries=config.max_retries,
+                base_url=config.base_url,  # None -> SDK default / env var
+            )
+        except openai.OpenAIError as exc:  # e.g. missing OPENAI_API_KEY
+            raise ProviderError(f"openai client misconfigured: {exc}", recoverable=False,
+                                kind="configuration") from exc
 
     def sdk_version(self) -> str | None:
         return str(self._openai.__version__)
@@ -96,8 +102,15 @@ class OpenAIProvider(LLMProvider):
     def complete(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> LLMResponse:
         try:
             resp = self._client.chat.completions.create(**self.build_request(system, messages, tools))
+        except self._openai.APIStatusError as exc:
+            raise ProviderError(f"openai API error {exc.status_code}: {exc.message}",
+                                recoverable=is_recoverable_status(exc.status_code),
+                                status_code=exc.status_code) from exc
+        except self._openai.APIConnectionError as exc:  # includes timeouts
+            raise ProviderError(f"openai connection error: {exc}", recoverable=True,
+                                kind="connection") from exc
         except self._openai.APIError as exc:
-            raise ProviderError(f"openai API error: {exc}") from exc
+            raise ProviderError(f"openai API error: {exc}", recoverable=True) from exc
         choice = resp.choices[0]
         msg = choice.message
         calls = [

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 _EXCLUDED_PARTS = {"__pycache__", ".pytest_cache"}
+_EXCLUDED_NAMES = {".DS_Store", "Thumbs.db"}  # OS artefacts must not change provenance hashes
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -33,7 +34,7 @@ def sha256_tree(root: Path, *, exclude_dirs: set[str] | None = None) -> str:
     digest = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
         rel = path.relative_to(root)
-        if excluded.intersection(rel.parts) or path.suffix == ".pyc":
+        if excluded.intersection(rel.parts) or path.suffix == ".pyc" or path.name in _EXCLUDED_NAMES:
             continue
         digest.update(rel.as_posix().encode())
         digest.update(b"\0")

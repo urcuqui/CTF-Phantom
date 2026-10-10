@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from ctf_phantom.challenges.spec import Challenge
 from ctf_phantom.environments.base import (
+    BackendUnavailableError,
     ChallengeEnvironment,
+    CleanupError,
     EnvironmentError_,
     EnvironmentInfo,
+    IsolationError,
 )
 from ctf_phantom.environments.docker import DockerComposeEnvironment, docker_available
 from ctf_phantom.environments.local import LocalEnvironment
@@ -22,10 +25,13 @@ def build_environment(backend: str, challenge: Challenge, *, startup_timeout_s: 
 
 __all__ = [
     "BACKENDS",
+    "BackendUnavailableError",
     "ChallengeEnvironment",
+    "CleanupError",
     "DockerComposeEnvironment",
     "EnvironmentError_",
     "EnvironmentInfo",
+    "IsolationError",
     "LocalEnvironment",
     "build_environment",
     "docker_available",

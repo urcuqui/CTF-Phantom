@@ -28,7 +28,8 @@ class AgentConfig(BaseModel):
     max_flag_submissions: int = Field(3, gt=0)
     max_observation_chars: int = Field(6000, gt=200)
     max_consecutive_no_tool: int = Field(2, ge=0)
-    max_total_tokens: int | None = None            # optional budget across the episode
+    max_total_tokens: int | None = None            # optional token budget across the episode
+    max_wall_time_s: float | None = None           # optional wall-clock budget for the episode
     prompt_profile: str = "standard"
     request_timeout_s: float = 10.0
 
@@ -39,6 +40,7 @@ class StopReason(StrEnum):
     TERMINATED = "terminated"
     MAX_STEPS = "max_steps"
     TOKEN_BUDGET = "token_budget"
+    TIME_BUDGET = "time_budget"
     NO_TOOL_CALLS = "no_tool_calls"
     REFUSAL = "refusal"
     PROVIDER_ERROR = "provider_error"
@@ -49,6 +51,8 @@ class AgentOutcome:
     stop_reason: StopReason
     steps: int
     error: str | None = None
+    error_recoverable: bool | None = None   # set for PROVIDER_ERROR
+    error_kind: str | None = None
 
 
 class Agent:
@@ -72,8 +76,12 @@ class Agent:
         self.messages = [Message(role="user", content=objective)]
         tokens_used = 0
         no_tool_streak = 0
+        started = time.monotonic()
 
         for step in range(1, self.config.max_steps + 1):
+            if (self.config.max_wall_time_s is not None
+                    and time.monotonic() - started >= self.config.max_wall_time_s):
+                return AgentOutcome(StopReason.TIME_BUDGET, step - 1)
             self.recorder.record(EventType.LLM_REQUEST, {
                 "message_count": len(self.messages),
                 "messages_sha256": sha256_json([m.fingerprint() for m in self.messages]),
@@ -83,8 +91,11 @@ class Agent:
                 resp = self.provider.complete(self.system_prompt, self.messages, self.tool_specs)
             except ProviderError as exc:
                 self.recorder.record(EventType.LLM_ERROR, {
-                    "error_type": type(exc).__name__, "message": str(exc)}, step=step)
-                return AgentOutcome(StopReason.PROVIDER_ERROR, step, str(exc))
+                    "error_type": type(exc).__name__, "message": str(exc),
+                    "recoverable": exc.recoverable, "status_code": exc.status_code, "kind": exc.kind,
+                }, step=step)
+                return AgentOutcome(StopReason.PROVIDER_ERROR, step, str(exc),
+                                    error_recoverable=exc.recoverable, error_kind=exc.kind)
             latency = time.monotonic() - t0
 
             self.recorder.record(EventType.LLM_RESPONSE, {
@@ -169,8 +180,9 @@ class Agent:
             self.recorder.record(EventType.SCOPE_VIOLATION, {"call_id": call_id, **sv}, step=step)
         if name == "submit_flag" and "correct" in result.meta:
             self.recorder.record(EventType.FLAG_SUBMISSION, {
-                "call_id": call_id, **{k: result.meta[k] for k in
-                                       ("submitted", "correct", "well_formed", "submission_index")},
+                "call_id": call_id,
+                **{k: result.meta[k] for k in ("submitted", "correct", "well_formed", "submission_index")},
+                "reserved_decoy": bool(result.meta.get("reserved_decoy", False)),
             }, step=step)
         return result
 

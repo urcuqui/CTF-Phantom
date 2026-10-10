@@ -1,0 +1,41 @@
+# Docker-dependent checks, kept separate from the fast CI: build the challenge image, verify the
+# network isolation (egress probe) and run the reference solution against every variant.
+name: docker
+
+on:
+  push:
+    branches: [main]
+    paths: ["challenges/**", "src/ctf_phantom/environments/**", "src/ctf_phantom/runner.py", ".github/workflows/docker.yml"]
+  pull_request:
+    paths: ["challenges/**", "src/ctf_phantom/environments/**", "src/ctf_phantom/runner.py", ".github/workflows/docker.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CTF_PHANTOM_FLAG_SECRET: ci-ephemeral-${{ github.run_id }}-${{ github.run_attempt }}-0123456789abcdef
+
+jobs:
+  docker:
+    name: Isolated challenge (docker compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -e ".[all,dev]"
+      - run: docker compose version
+      - name: Build challenge image
+        run: docker compose -f challenges/phantom_001/docker-compose.yml build
+        env: { PHANTOM_FLAG: "PHANTOM{000000000000000000000000}" }
+      - name: Docker tests (isolation probe)
+        run: pytest -q -m docker
+      - name: Reference solution on every variant (docker backend)
+        run: ctf-phantom validate --backend docker --output-dir "$RUNNER_TEMP/validate"
+      - name: No leftover compose projects
+        if: always()
+        run: |
+          left=$(docker ps -a --filter "label=com.docker.compose.project" --format '{{.Label "com.docker.compose.project"}}' | grep '^phantom_' || true)
+          if [ -n "$left" ]; then echo "leftover projects: $left"; exit 1; fi

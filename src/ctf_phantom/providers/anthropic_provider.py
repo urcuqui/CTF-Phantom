@@ -17,6 +17,7 @@ from ctf_phantom.providers.base import (
     ProviderError,
     TokenUsage,
     ToolCall,
+    is_recoverable_status,
 )
 from ctf_phantom.tools.base import ToolSpec
 
@@ -71,7 +72,8 @@ class AnthropicProvider(LLMProvider):
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ProviderError("install the 'anthropic' extra: pip install -e '.[anthropic]'") from exc
+            raise ProviderError("install the 'anthropic' extra: pip install -e '.[anthropic]'",
+                                recoverable=False, kind="configuration") from exc
         self._anthropic = anthropic
         self._client = anthropic.Anthropic(
             timeout=config.timeout_s,
@@ -102,12 +104,16 @@ class AnthropicProvider(LLMProvider):
         try:
             resp = self._client.messages.create(**params)
         except self._anthropic.APIStatusError as exc:
-            raise ProviderError(f"anthropic API error {exc.status_code}: {exc.message}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise ProviderError(f"anthropic connection error: {exc}") from exc
+            raise ProviderError(f"anthropic API error {exc.status_code}: {exc.message}",
+                                recoverable=is_recoverable_status(exc.status_code),
+                                status_code=exc.status_code) from exc
+        except self._anthropic.APIConnectionError as exc:  # includes timeouts
+            raise ProviderError(f"anthropic connection error: {exc}", recoverable=True,
+                                kind="connection") from exc
         except TypeError as exc:  # raised by the SDK when no credentials can be resolved
             raise ProviderError(
-                f"anthropic client misconfigured ({exc}); set ANTHROPIC_API_KEY or run `ant auth login`"
+                f"anthropic client misconfigured ({exc}); set ANTHROPIC_API_KEY or run `ant auth login`",
+                recoverable=False, kind="configuration",
             ) from exc
 
         text = "".join(b.text for b in resp.content if b.type == "text")
