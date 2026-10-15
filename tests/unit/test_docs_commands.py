@@ -32,11 +32,12 @@ def _cli_commands() -> list[tuple[str, str]]:
 
 @pytest.mark.parametrize(("doc", "line"), _cli_commands(), ids=lambda x: x if "/" not in x else x.split("/")[-1])
 def test_documented_cli_commands_exist(doc: str, line: str) -> None:
-    args = shlex.split(line)[1:]
-    sub = args[0]
-    help_out = runner.invoke(cli.app, [sub, "--help"], terminal_width=200)
-    assert help_out.exit_code == 0, f"{doc}: unknown command `{sub}`"
-    for opt in (a for a in args[1:] if a.startswith("--")):
+    args = shlex.split(line.rstrip("\\"))[1:]
+    command = args[:2] if args[0] == "audit" else args[:1]  # `audit` is a command group
+    help_out = runner.invoke(cli.app, [*command, "--help"], terminal_width=200)
+    assert help_out.exit_code == 0, f"{doc}: unknown command `{' '.join(command)}`"
+    sub = " ".join(command)
+    for opt in (a for a in args[len(command):] if a.startswith("--")):
         assert opt in help_out.output, f"{doc}: `{sub}` has no option {opt}"
 
 
@@ -51,5 +52,6 @@ def test_documented_make_targets_exist() -> None:
 
 def test_documented_exit_codes_match_cli() -> None:
     table = (ROOT / "docs/pilot-protocol.md").read_text()
-    for code in (cli.EXIT_ABORTED, cli.EXIT_CONFIG, cli.EXIT_INCOMPLETE, cli.EXIT_REJECTED, cli.EXIT_PROBE_FAILED):
+    for code in (cli.EXIT_ABORTED, cli.EXIT_CONFIG, cli.EXIT_INCOMPLETE, cli.EXIT_REJECTED, cli.EXIT_PROBE_FAILED,
+                 cli.EXIT_REVIEW_REFUSED):
         assert re.search(rf"^\| {code} \|", table, re.M), f"exit code {code} undocumented"

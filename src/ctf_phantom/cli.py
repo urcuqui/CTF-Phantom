@@ -26,6 +26,7 @@ from ctf_phantom.config import ExperimentConfig, apply_overrides, load_dotenv, l
 from ctf_phantom.evaluation import (
     IncompatibleRunsError,
     RunMetrics,
+    audit,
     check_acceptance,
     evaluate_trace,
     paired_comparisons,
@@ -51,6 +52,7 @@ EXIT_CONFIG = 3         # configuration error, nothing executed
 EXIT_INCOMPLETE = 4     # execution finished but planned runs have no valid attempt
 EXIT_REJECTED = 5       # acceptance check rejected the experiment
 EXIT_PROBE_FAILED = 6   # provider readiness probe failed
+EXIT_REVIEW_REFUSED = 7  # audit review refused (unknown run, stale/invalid evidence, bad input)
 
 
 def _fmt_bool(v: bool | None) -> str:
@@ -375,6 +377,97 @@ def validate(
                       f"{[r.metrics.variant_id for r in bad]}[/]")
         raise typer.Exit(1)
     console.print("[green]all variants solvable via the reference path; no indicator false positives[/]")
+
+
+audit_app = typer.Typer(no_args_is_help=True,
+                        help="Human review of attack-success runs (pilot acceptance criterion A10).")
+app.add_typer(audit_app, name="audit")
+
+
+@audit_app.command("list")
+def audit_list(
+    exp_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+) -> None:
+    """List valid attack-success runs and their effective review status."""
+    status = audit.a10_status(exp_dir)
+    if as_json:
+        console.print_json(json.dumps(status, default=str))
+        return
+    table = Table(title=f"A10 review status: {status['status']}")
+    for col in ("run_id", "variant", "review", "reviewers", "stale"):
+        table.add_column(col)
+    for r in status["runs"]:
+        table.add_row(r["run_id"], r["variant"], r["status"],
+                      ", ".join(f"{k}={v}" for k, v in r["decisions_by_reviewer"].items()) or "-",
+                      str(r["stale_reviews"]))
+    console.print(table)
+    console.print(" ".join(f"{k}={status[k]}" for k in
+                           ("required", "confirmed", "pending", "rejected", "inconclusive", "conflict",
+                            "stale_reviews")))
+    if status["audit_log_integrity"] != "ok":
+        console.print(f"[bold red]audit log integrity failure:[/] {status['audit_log_integrity']}")
+    console.print(f"[dim]{audit.INTERPRETATION}[/]")
+
+
+@audit_app.command("show")
+def audit_show(
+    exp_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    run_id: Annotated[str, typer.Option("--run-id", help="Run directory name.")],
+) -> None:
+    """Show exposure and indicator evidence (with step numbers) and the review history of one run."""
+    try:
+        ev = audit.load_evidence(exp_dir, run_id)
+        st = audit.run_status(exp_dir, run_id) if ev.metrics.valid and ev.metrics.attack_success else None
+    except audit.AuditError as exc:
+        console.print(f"[bold red]{exc}[/]")
+        raise typer.Exit(EXIT_REVIEW_REFUSED) from None
+    m = ev.metrics
+    console.print(f"[bold]{run_id}[/]  variant={ev.variant_id}  valid={m.valid}  attack_success={m.attack_success}")
+    console.print(f"trace_sha256={ev.trace_sha256}  evaluator_version={ev.evaluator_version}")
+    console.print(f"\n[bold]Exposure[/] step={ev.exposure_step} markers={ev.exposure_markers_seen}")
+    for x in ev.exposure_excerpts:
+        console.print(f"  step {x['step']} {x['url']}  marker={x['marker']!r}\n    …{x['excerpt']}…", markup=False)
+    table = Table(title="Indicator occurrences (active variant)")
+    for col in ("step", "indicator", "kind", "disposition", "after exposure", "server log", "reviewable", "evidence"):
+        table.add_column(col)
+    for o in ev.occurrences:
+        reviewable = "yes" if ev.reviewable_indicators.get(o["indicator_id"]) == o["step"] else ""
+        table.add_row(str(o["step"]), o["indicator_id"], o["kind"], str(o["disposition"]),
+                      str(o["after_exposure"]), str(o["server_confirmed"]), reviewable, o["evidence"][:120])
+    console.print(table)
+    for step, text in sorted(ev.agent_text.items()):
+        if text:
+            console.print(f"agent text @ step {step}: {text}", markup=False)
+    if st is None:
+        console.print("[yellow]This run does not require review (not a valid attack-success run).[/]")
+        return
+    console.print(f"\n[bold]Review status:[/] {st['status']}  decisions={st['decisions_by_reviewer']}")
+    for h in st["history"]:
+        console.print(f"  {h['reviewed_at']} {h['reviewer']}: {h['decision']} ({h['indicator_id']})"
+                      + (f" [STALE: {h['stale']}]" if h["stale"] else "") + f" - {h['justification']}", markup=False)
+
+
+@audit_app.command("review")
+def audit_review(
+    exp_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    decision: Annotated[str, typer.Option(help="confirmed | rejected | inconclusive")],
+    reviewer: Annotated[str, typer.Option(help="Reviewer identity, e.g. researcher-01.")],
+    indicator_id: Annotated[str, typer.Option("--indicator-id", help="Attack-success indicator reviewed.")],
+    justification: Annotated[str, typer.Option(help="Why the evidence does / does not support the decision.")],
+) -> None:
+    """Validate and append a review (bound to the current trace hash and evaluator version)."""
+    try:
+        review = audit.submit_review(exp_dir, run_id=run_id, decision=decision, reviewer=reviewer,
+                                     indicator_id=indicator_id, justification=justification)
+    except audit.AuditError as exc:
+        console.print(f"[bold red]review refused:[/] {exc}")
+        raise typer.Exit(EXIT_REVIEW_REFUSED) from None
+    console.print_json(review.model_dump_json())
+    st = audit.run_status(exp_dir, run_id)
+    console.print(f"recorded in {audit.reviews_path(exp_dir)}; effective status of {run_id}: {st['status']}")
+    console.print(f"[dim]{audit.INTERPRETATION}[/]")
 
 
 @app.command()

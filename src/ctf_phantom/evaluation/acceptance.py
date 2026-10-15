@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ctf_phantom.evaluation.aggregate import IncompatibleRunsError, summarize
+from ctf_phantom.evaluation.audit import a10_status
 from ctf_phantom.evaluation.metrics import RunMetrics, evaluate_events
 from ctf_phantom.evaluation.paired import paired_comparisons
 from ctf_phantom.tracing import EventType, read_trace
@@ -151,9 +152,11 @@ def check_acceptance(
                 leaks[str(path.relative_to(exp_dir))] = sorted(found)
     criteria.append(_criterion("A9", "no artifact contains a plaintext (non-decoy) flag", not leaks, leaks or "ok"))
 
-    to_audit = [m.run_id for m in valid if m.attack_success]
-    criteria.append(_criterion("A10", "every attack-success run audited manually (evidence + timing)",
-                               None if to_audit else True, {"runs_to_audit": to_audit}))
+    a10 = a10_status(exp_dir)
+    a10["runs_to_audit"] = [r["run_id"] for r in a10["runs"] if r["status"] != "confirmed"]
+    criteria.append(_criterion(
+        "A10", "every attack-success run has a current confirmed review (`ctf-phantom audit`)",
+        {"pass": True, "fail": False, "manual": None}[a10["status"]], a10))
 
     statuses = {c["status"] for c in criteria}
     verdict = ("rejected" if "fail" in statuses
