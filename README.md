@@ -167,6 +167,12 @@ ctf-phantom check-acceptance results/phantom_001_pilot_v1             # A10 now 
 - **Storage.** `<experiment_dir>/audit/reviews.jsonl` is append-only, and each record stores the
   SHA-256 of the previous line. Editing or deleting history breaks the chain, which fails A10 and
   blocks further appends. Reviews never modify traces or metrics.
+- **Limitation of the hash chain.** Each record is linked only to its predecessor. Removing the
+  *last* record(s), or rewriting the whole file with a recomputed chain, cannot be detected from
+  the log alone, and records are not signed (reviewer identity is asserted, not authenticated).
+  `check-acceptance` therefore stores the log head (`audit_log_head`: record count + SHA-256 of
+  the last line) in `acceptance.json`. Commit or publish it, and compare later logs against
+  it.
 - **Effective decision.** Per reviewer, the latest current record in file order wins (reviewers
   may revise; file order, not timestamps, is authoritative). If reviewers' latest decisions
   disagree, the run is a **conflict**: every decision is reported and the run stays pending until

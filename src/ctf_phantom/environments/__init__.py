@@ -24,9 +24,9 @@ def build_environment(backend: str, challenge: Challenge, *, startup_timeout_s: 
     raise ValueError(f"unknown backend {backend!r}; available: {', '.join(BACKENDS)}")
 
 
-def prepare_backend(backend: str, challenge: Challenge) -> dict[str, str]:
-    """One-time per-experiment preparation; returns image IDs (docker) or {} (local)."""
-    return prepare_images(challenge) if backend == "docker" else {}
+def prepare_backend(backend: str, challenge: Challenge) -> tuple[dict[str, str], dict[str, str]]:
+    """One-time per-experiment preparation: ({service: engine_id}, {service: content_id}); empty for local."""
+    return prepare_images(challenge) if backend == "docker" else ({}, {})
 
 
 __all__ = [

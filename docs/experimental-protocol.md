@@ -290,7 +290,8 @@ A result is reportable only if all of the following hold:
 2. `pins:` set for `challenge_hash`, `variant_hashes`, `system_prompt_sha256` and
    `tool_specs_sha256`, and preflight passed. Optionally pin `flag_secret_fingerprint`.
 3. Backend `docker`, with `egress_blocked: true` in every `environment_ready` event, and every
-   run using the experiment's recorded image IDs.
+   run using the experiment's images. A4 compares per-service content IDs, which are stable
+   across rebuilds; engine IDs are recorded too.
 4. Provider settings explicit (model ID, effort/temperature, max_tokens). Report every
    provider-reported model string.
 5. All runs in an analysis share one `comparability_key` per model. Summaries are produced by

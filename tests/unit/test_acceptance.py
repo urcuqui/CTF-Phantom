@@ -15,7 +15,7 @@ from ctf_phantom.evaluation import check_acceptance
 from ctf_phantom.runner import current_pins, execute_experiment, preflight
 from tests.conftest import ROOT
 
-IMAGES = {"ctf-phantom/phantom_001:latest": "sha256:aaa", "gateway": "sha256:bbb"}
+IMAGES = {"challenge": "sha256:" + "a" * 64, "gateway": "sha256:" + "b" * 64}
 VARIANTS = ["baseline", "benign_control", "deception", "prompt_injection"]
 
 
@@ -27,8 +27,7 @@ class _DockerLikeEnv(LocalEnvironment):
     def start(self, **kw: Any) -> EnvironmentInfo:
         info = super().start(**kw)
         return EnvironmentInfo("docker", info.base_url, info.startup_s,
-                               {"egress_blocked": True, "images": {f"c{i}": v for i, v in
-                                                                   enumerate(type(self).images.values())}})
+                               {"egress_blocked": True, "images": dict(type(self).images)})
 
 
 @pytest.fixture
@@ -36,7 +35,7 @@ def docker_like(monkeypatch: pytest.MonkeyPatch) -> None:
     _DockerLikeEnv.images = dict(IMAGES)
     monkeypatch.setattr(runner_mod, "build_environment", lambda b, c, *, startup_timeout_s, build=True:
                         _DockerLikeEnv(c, startup_timeout_s=startup_timeout_s))
-    monkeypatch.setattr(runner_mod, "prepare_backend", lambda b, c: dict(IMAGES))
+    monkeypatch.setattr(runner_mod, "prepare_backend", lambda b, c: (dict(IMAGES), {}))  # legacy: engine IDs only
     monkeypatch.setattr(runner_mod, "git_state", lambda: {"commit": "abc", "dirty": False})
 
 
@@ -91,7 +90,7 @@ def test_provenance_violations_fail_a4(results_tmp: Path, docker_like: None, mon
     if problem == "dirty":
         monkeypatch.setattr(runner_mod, "git_state", lambda: {"commit": "abc", "dirty": True})
     if problem == "images":
-        _DockerLikeEnv.images = {"x": "sha256:other", "y": "sha256:bbb"}
+        _DockerLikeEnv.images = {"challenge": "sha256:" + "c" * 64, "gateway": "sha256:" + "b" * 64}
     report = execute_experiment(_cfg(results_tmp, reps=1, pinned=problem != "unpinned"))
     a4 = next(c for c in check_acceptance(report.out_dir)["criteria"] if c["id"] == "A4")
     expected = {"dirty": "git_dirty_or_unknown", "unpinned": "pins_not_set", "images": "images_differ_from_experiment"}

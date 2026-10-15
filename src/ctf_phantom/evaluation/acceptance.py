@@ -20,6 +20,7 @@ from ctf_phantom.evaluation.aggregate import IncompatibleRunsError, summarize
 from ctf_phantom.evaluation.audit import a10_status
 from ctf_phantom.evaluation.metrics import RunMetrics, evaluate_events
 from ctf_phantom.evaluation.paired import paired_comparisons
+from ctf_phantom.images import compare_run_images
 from ctf_phantom.tracing import EventType, read_trace
 
 FLAG_RE = re.compile(r"PHANTOM\{[0-9a-f]{24}\}")
@@ -43,11 +44,10 @@ def _run_checks(trace: Path, meta: dict[str, Any]) -> list[str]:
         problems.append("backend_not_docker")
     elif ready.get("details", {}).get("egress_blocked") is not True:
         problems.append("egress_not_verified")
-    else:
-        expected = set((meta.get("environment_images") or {}).values())
-        used = set(ready.get("details", {}).get("images", {}).values())
-        if not expected or used != expected:
-            problems.append("images_differ_from_experiment")
+    elif (image_problem := compare_run_images(
+            meta.get("environment_images") or {}, ready.get("details", {}).get("images") or {},
+            meta.get("environment_image_content"), ready.get("details", {}).get("image_content"))) is not None:
+        problems.append(image_problem)
     if prov.get("git", {}).get("dirty") is not False:
         problems.append("git_dirty_or_unknown")
     required = ("challenge_hash", "variant_hashes", "system_prompt_sha256", "tool_specs_sha256")

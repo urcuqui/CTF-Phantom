@@ -535,7 +535,7 @@ def execute_experiment(cfg: ExperimentConfig, *, on_run: Any = None,
             f"{out_dir} already contains runs; use a new experiment name (runs are never mixed or overwritten)"
         )
     try:
-        images = prepare_backend(cfg.environment.backend, challenge)
+        images, image_content = prepare_backend(cfg.environment.backend, challenge)
     except EnvironmentError_ as exc:
         raise ConfigurationError(f"environment preparation failed (no runs attempted): {exc}") from exc
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -547,7 +547,8 @@ def execute_experiment(cfg: ExperimentConfig, *, on_run: Any = None,
         "pins": current_pins(cfg, challenge, secret),
         "host": host_provenance(),
         "run_order": order,
-        "environment_images": images,  # every run of this experiment uses exactly these images
+        "environment_images": images,  # engine IDs: exact identity within this experiment
+        "environment_image_content": image_content,  # content IDs: rebuild-stable, compared by A4
         "created_at": datetime.now(UTC).isoformat(),
         "status": "running",
     }

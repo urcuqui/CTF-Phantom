@@ -25,6 +25,7 @@ from ctf_phantom.environments.base import (
     IsolationError,
     free_local_port,
 )
+from ctf_phantom.images import content_id, normalize_image_id
 
 _EGRESS_PROBE = (
     "import socket,sys\n"
@@ -47,8 +48,18 @@ def docker_available() -> bool:
 _BUILD_ENV = {"PHANTOM_FLAG": "PHANTOM{000000000000000000000000}", "PHANTOM_HOST_PORT": "0"}
 
 
-def prepare_images(challenge: Any, *, timeout: float = 900) -> dict[str, str]:
-    """Pull + build the challenge's images ONCE per experiment and return {image_ref: image_id}.
+def image_inspect(ref: str) -> dict[str, Any]:
+    proc = subprocess.run(["docker", "image", "inspect", ref], capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise EnvironmentError_(f"image {ref} not found: {proc.stderr.strip()}")
+    data: dict[str, Any] = json.loads(proc.stdout)[0]
+    return data
+
+
+def prepare_images(challenge: Any, *, timeout: float = 900) -> tuple[dict[str, str], dict[str, str]]:
+    """Pull + build the challenge's images ONCE per experiment.
+
+    Returns ``({service: engine_id}, {service: content_id})`` (see ``ctf_phantom.images``).
 
     Runs then start with ``build=False`` so every run of an experiment uses byte-identical images
     (compose labels images with the project name, so per-run builds would yield new image IDs).
@@ -70,14 +81,20 @@ def prepare_images(challenge: Any, *, timeout: float = 900) -> dict[str, str]:
 
     run("pull", "--ignore-buildable", "--quiet")
     run("build", "--quiet")
+    services = json.loads(run("config", "--format", "json")).get("services", {})
     images: dict[str, str] = {}
-    for ref in run("config", "--images").split():
-        proc = subprocess.run(["docker", "image", "inspect", ref, "--format", "{{.Id}}"],
-                              capture_output=True, text=True, timeout=60)
-        if proc.returncode != 0:
-            raise EnvironmentError_(f"image {ref} missing after build: {proc.stderr.strip()}")
-        images[ref] = proc.stdout.strip()
-    return images
+    contents: dict[str, str] = {}
+    for service, spec in sorted(services.items()):
+        ref = spec.get("image")
+        if not ref:
+            raise EnvironmentError_(f"service {service} has no image reference")
+        data = image_inspect(ref)
+        try:
+            images[service] = normalize_image_id(data["Id"])
+            contents[service] = content_id(data)
+        except ValueError as exc:
+            raise EnvironmentError_(f"{ref}: {exc}") from exc
+    return images, contents
 
 
 class DockerComposeEnvironment(ChallengeEnvironment):
@@ -126,7 +143,8 @@ class DockerComposeEnvironment(ChallengeEnvironment):
         self.wait_healthy(base_url)
         details: dict[str, Any] = {
             "project": self.project,
-            "images": self._image_ids(),
+            "images": (ids := self._image_ids()),
+            "image_content": self._image_content(ids),
             "network": "challenge on internal-only network; gateway on 127.0.0.1",
         }
         if self.verify_isolation:
@@ -136,14 +154,36 @@ class DockerComposeEnvironment(ChallengeEnvironment):
         return EnvironmentInfo(self.backend, base_url, round(time.monotonic() - t0, 3), details)
 
     def _image_ids(self) -> dict[str, str]:
-        proc = self._compose("images", "--format", "json", check=False)
+        """{compose service: immutable image ID} of the containers this run actually started.
+
+        Read from the engine (``docker inspect`` -> ``.Image``) rather than from ``compose images``,
+        whose ID column is truncated or formatted differently across Compose versions. Keyed by
+        service, so per-run container names never enter the comparison.
+        """
+        ids = self._compose("ps", "-a", "-q", check=False).stdout.split()
+        if not ids:
+            raise EnvironmentError_(f"no containers found for project {self.project}")
+        proc = subprocess.run(
+            ["docker", "inspect", "--format",
+             '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}', *ids],
+            capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
-            return {}
+            raise EnvironmentError_(f"docker inspect failed: {proc.stderr.strip()}")
+        images: dict[str, str] = {}
+        for line in proc.stdout.splitlines():
+            service, _, image = line.strip().partition(" ")
+            if service:
+                try:
+                    images[service] = normalize_image_id(image)
+                except ValueError as exc:
+                    raise EnvironmentError_(str(exc)) from exc
+        return images
+
+    def _image_content(self, ids: dict[str, str]) -> dict[str, str]:
         try:
-            rows = json.loads(proc.stdout or "[]")
-        except json.JSONDecodeError:
-            return {}
-        return {r.get("ContainerName", "?"): r.get("ID", "?") for r in rows if isinstance(r, dict)}
+            return {service: content_id(image_inspect(image_id)) for service, image_id in ids.items()}
+        except ValueError as exc:
+            raise EnvironmentError_(str(exc)) from exc
 
     def _egress_blocked(self) -> bool:
         proc = self._compose("exec", "-T", "challenge", "python", "-c", _EGRESS_PROBE, check=False, timeout=30)

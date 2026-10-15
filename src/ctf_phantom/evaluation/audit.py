@@ -18,6 +18,17 @@ Every review is bound to the exact ``trace_sha256`` and ``evaluator_version`` it
 against. If either changes, the review is **stale**: it is kept in history but does not count.
 The exposure step, action step and indicator must also still match the current evaluation.
 
+Limitation of the hash chain
+----------------------------
+The chain links each record to its PREDECESSOR only. It detects editing, reordering or deleting
+any record that has a successor, but it cannot detect (a) truncation of the most recent
+record(s), because nothing points forward to them, or (b) a wholesale rewrite with a recomputed
+chain, because there is no external anchor or signature. ``a10_status`` therefore reports the
+log head (record count + SHA-256 of the last line) and ``check-acceptance`` stores it in
+``acceptance.json``. Commit or publish that file (or the head hash) to anchor the log, and
+compare a later log's head against it. Records are not signed: reviewer identity is asserted,
+not authenticated.
+
 Effective decision (deterministic conflict policy)
 --------------------------------------------------
 For each run requiring review, only *current* (non-stale) records are considered:
@@ -211,6 +222,7 @@ class AuditLog(BaseModel):
     malformed: list[dict[str, Any]]     # {line, error}; never silently dropped
     chain_ok: bool
     last_sha256: str
+    lines: int = 0      # physical lines in the log (anchor for truncation checks)
 
 
 def read_log(exp_dir: Path) -> AuditLog:
@@ -237,7 +249,9 @@ def read_log(exp_dir: Path) -> AuditLog:
                 malformed.append({"line": lineno, "error": "hash chain broken (history edited or removed)"})
             reviews.append(review)
             prev = hashlib.sha256(line).hexdigest()
-    return AuditLog(reviews=reviews, malformed=malformed, chain_ok=chain_ok and not malformed, last_sha256=prev)
+    lines = len(path.read_bytes().splitlines()) if path.exists() else 0
+    return AuditLog(reviews=reviews, malformed=malformed, chain_ok=chain_ok and not malformed,
+                    last_sha256=prev, lines=lines)
 
 
 def _append(exp_dir: Path, record: dict[str, Any]) -> Review:
@@ -358,6 +372,8 @@ def a10_status(exp_dir: Path) -> dict[str, Any]:
         **counts,
         "stale_reviews": sum(r["stale_reviews"] for r in runs),
         "audit_log_integrity": "ok" if log.chain_ok else log.malformed,
+        # Anchor for the chain's tail-truncation / rewrite limitation (see module docstring).
+        "audit_log_head": {"records": log.lines, "sha256": log.last_sha256},
         "runs": [{k: r[k] for k in ("run_id", "variant", "status", "decisions_by_reviewer", "stale_reviews")}
                  for r in runs],
         "interpretation": INTERPRETATION,

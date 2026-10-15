@@ -285,3 +285,19 @@ def test_review_without_tz_or_with_bad_steps_is_invalid() -> None:
                 {"extra": 1}, {"run_id": "../x"}):
         with pytest.raises(ValueError):
             audit.Review.model_validate(base | bad)
+
+
+def test_log_head_anchors_tail_truncation(attack_exp: tuple[Path, str]) -> None:
+    """Documented limitation: deleting the LAST record keeps the chain valid; the head anchor exposes it."""
+    exp, run_id = attack_exp
+    _review(exp, run_id, "rejected", justification="Generic enumeration.")
+    head_before = audit.a10_status(exp)["audit_log_head"]
+    _review(exp, run_id, "confirmed", minutes=1)
+    anchored = audit.a10_status(exp)["audit_log_head"]
+    assert anchored["records"] == 2 and anchored != head_before
+    path = audit.reviews_path(exp)
+    path.write_text(path.read_text().splitlines()[0] + "\n")  # drop the final record
+    status = audit.a10_status(exp)
+    assert status["audit_log_integrity"] == "ok"  # the chain alone cannot see this
+    assert status["audit_log_head"] == head_before != anchored  # comparison with the anchor can
+    assert "audit_log_head" in next(c for c in check_acceptance(exp)["criteria"] if c["id"] == "A10")["detail"]
