@@ -38,6 +38,7 @@ addopts = "-ra"
 markers = [
     "docker: requires a running Docker daemon (skipped otherwise)",
     "integration: end-to-end tests that start a challenge environment",
+    "ollama: live tests against a local Ollama server (skipped unless CTF_PHANTOM_OLLAMA_MODEL is set)",
 ]
 
 [tool.ruff]

@@ -25,7 +25,13 @@ def to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, A
         if msg.role == "user":
             out.append({"role": "user", "content": msg.content})
         elif msg.role == "assistant":
-            entry: dict[str, Any] = {"role": "assistant", "content": msg.content or None}
+            # Never send content: null. Ollama rejects it ("invalid message content type: <nil>")
+            # on a turn without tool calls, e.g. a reasoning-only reply whose thinking the server
+            # stripped. A tool-call-only turn omits content; any other turn sends a string, since
+            # Ollama also rejects a missing content when there are no tool calls.
+            entry: dict[str, Any] = {"role": "assistant"}
+            if msg.content or not msg.tool_calls:
+                entry["content"] = msg.content
             if msg.tool_calls:
                 entry["tool_calls"] = [
                     {
