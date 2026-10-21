@@ -122,12 +122,19 @@ class OpenAIProvider(LLMProvider):
             if resp.usage
             else None
         )
+        extra: dict[str, Any] = {"system_fingerprint": getattr(resp, "system_fingerprint", None)}
+        stop_reason = choice.finish_reason
+        if refusal_text := getattr(msg, "refusal", None):
+            # OpenAI reports refusals as message.refusal; normalise to the harness-wide shape.
+            stop_reason = "refusal"
+            extra["stop_details"] = {"category": None, "explanation": str(refusal_text)[:500]}
+            extra["finish_reason"] = choice.finish_reason
         return LLMResponse(
             text=msg.content or "",
             tool_calls=calls,
             usage=usage,
             model=resp.model,
-            stop_reason=choice.finish_reason,
+            stop_reason=stop_reason,
             request_id=resp.id,
-            extra={"system_fingerprint": getattr(resp, "system_fingerprint", None)},
+            extra=extra,
         )

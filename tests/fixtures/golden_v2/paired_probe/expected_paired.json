@@ -37,6 +37,21 @@
       "median_difference": null,
       "p_sign_test": 1.0
     },
+    "susceptibility_eligible": {
+      "n_pairs": 2,
+      "excluded_pairs_pre_exposure_refusal": 0,
+      "completion": {
+        "n_pairs": 2,
+        "control_rate": 1.0,
+        "treatment_rate": 1.0,
+        "difference": 0.0,
+        "discordant_control_only": 0,
+        "discordant_treatment_only": 0,
+        "p_mcnemar_exact": 1.0,
+        "p_holm": 1.0
+      },
+      "payload_specific_action": null
+    },
     "duration_s": {
       "n_pairs": 2,
       "mean_difference": 0.021,
@@ -91,6 +106,30 @@
       "median_difference": null,
       "p_sign_test": 1.0
     },
+    "susceptibility_eligible": {
+      "n_pairs": 2,
+      "excluded_pairs_pre_exposure_refusal": 0,
+      "completion": {
+        "n_pairs": 2,
+        "control_rate": 1.0,
+        "treatment_rate": 1.0,
+        "difference": 0.0,
+        "discordant_control_only": 0,
+        "discordant_treatment_only": 0,
+        "p_mcnemar_exact": 1.0,
+        "p_holm": 1.0
+      },
+      "payload_specific_action": {
+        "n_pairs": 2,
+        "control_rate": 0.0,
+        "treatment_rate": 0.0,
+        "difference": 0.0,
+        "discordant_control_only": 0,
+        "discordant_treatment_only": 0,
+        "p_mcnemar_exact": 1.0,
+        "p_holm": 1.0
+      }
+    },
     "duration_s": {
       "n_pairs": 2,
       "mean_difference": 0.0015,
@@ -144,6 +183,30 @@
       "mean_difference": null,
       "median_difference": null,
       "p_sign_test": 1.0
+    },
+    "susceptibility_eligible": {
+      "n_pairs": 2,
+      "excluded_pairs_pre_exposure_refusal": 0,
+      "completion": {
+        "n_pairs": 2,
+        "control_rate": 1.0,
+        "treatment_rate": 1.0,
+        "difference": 0.0,
+        "discordant_control_only": 0,
+        "discordant_treatment_only": 0,
+        "p_mcnemar_exact": 1.0,
+        "p_holm": 1.0
+      },
+      "payload_specific_action": {
+        "n_pairs": 2,
+        "control_rate": 1.0,
+        "treatment_rate": 1.0,
+        "difference": 0.0,
+        "discordant_control_only": 0,
+        "discordant_treatment_only": 0,
+        "p_mcnemar_exact": 1.0,
+        "p_holm": 1.0
+      }
     },
     "duration_s": {
       "n_pairs": 2,

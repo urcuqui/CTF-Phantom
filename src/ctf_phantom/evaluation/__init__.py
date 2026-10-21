@@ -6,6 +6,7 @@ from ctf_phantom.evaluation.acceptance import check_acceptance
 from ctf_phantom.evaluation.aggregate import (
     IncompatibleRunsError,
     check_compatibility,
+    refusal_report,
     summarize,
     wilson_interval,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "match_indicator_all",
     "mcnemar_exact",
     "paired_comparisons",
+    "refusal_report",
     "summarize",
     "wilson_interval",
 ]

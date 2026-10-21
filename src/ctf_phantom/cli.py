@@ -13,7 +13,7 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from ctf_phantom import __version__
+from ctf_phantom import __version__, readiness
 from ctf_phantom.challenges import (
     FlagSecret,
     FlagSecretError,
@@ -22,7 +22,7 @@ from ctf_phantom.challenges import (
     load_flag_secret,
     slot_texts,
 )
-from ctf_phantom.config import ExperimentConfig, apply_overrides, load_dotenv, load_experiment
+from ctf_phantom.config import ExperimentConfig, apply_overrides, experiment_dir, load_dotenv, load_experiment
 from ctf_phantom.evaluation import (
     IncompatibleRunsError,
     RunMetrics,
@@ -30,13 +30,13 @@ from ctf_phantom.evaluation import (
     check_acceptance,
     evaluate_trace,
     paired_comparisons,
+    refusal_report,
     summarize,
 )
 from ctf_phantom.runner import (
     RunResult,
     current_pins,
     execute_experiment,
-    experiment_dir,
     preflight,
     probe_provider,
     run_order,
@@ -159,6 +159,9 @@ def run(
         console.print(f"preflight OK. {len(order)} runs planned "
                       f"(max {len(order) * cfg.execution.max_attempts_per_run} attempts).")
         _print_budgets(cfg, len(order))
+        problem = readiness.readiness_problem(cfg)
+        console.print("provider readiness: " + ("passing check on record" if problem is None else problem)
+                      + (" [REQUIRED]" if cfg.execution.require_provider_check else " [not required]"))
         console.print("pins: " + json.dumps(current_pins(cfg, ch, secret)))
         console.print("order: " + ", ".join(f"r{r}:{v}" for r, v in order))
         return
@@ -210,21 +213,74 @@ def check_provider(
     """Send ONE request (real prompt, tools and objective) to validate provider readiness. Small paid call."""
     load_dotenv()
     cfg = apply_overrides(load_experiment(config), {"provider.model": model})
+    if not _probe_and_record(cfg):
+        raise typer.Exit(EXIT_PROBE_FAILED)
+
+
+def _probe_and_record(cfg: ExperimentConfig) -> bool:
+    """Run the readiness probe, record it as experiment evidence, print the outcome."""
     try:
         result = probe_provider(cfg)
     except ConfigurationError as exc:
         console.print(f"[bold red]configuration error:[/] {exc}")
         raise typer.Exit(EXIT_CONFIG) from None
+    record = readiness.record_check(cfg, result)
     console.print_json(json.dumps(result, default=str))
-    if not result["ok"]:
-        console.print("[bold red]provider probe failed[/] (error, refusal, or no well-formed tool call)")
-        raise typer.Exit(EXIT_PROBE_FAILED)
+    console.print(f"readiness evidence: outcome={record['outcome']} probe_key={record['probe_key']} "
+                  f"-> {readiness.checks_path(cfg)}")
+    if not record["ok"]:
+        detail = f" (category={record['refusal_category']})" if record.get("refusal_category") else ""
+        console.print(f"[bold red]provider not ready: {record['outcome']}{detail}[/]. A refusal is a property "
+                      "of this model/prompt combination; it is recorded, not retried or worked around.")
+        return False
     console.print("[green]provider ready[/]")
+    return True
+
+
+@app.command()
+def launch(
+    config: Annotated[Path, typer.Option(help="Experiment YAML (e.g. the pilot).", exists=True)],
+) -> None:
+    """Gated launch: preflight -> provider probe (recorded) -> experiment -> summarize -> acceptance.
+
+    Stops before any run if the provider probe does not return a well-formed tool call (refusal,
+    error, no/malformed tool call). The probe is ONE small paid request for real providers.
+    """
+    load_dotenv()
+    cfg = load_experiment(config)
+    _ensure_secret()
+    try:
+        preflight(cfg)
+    except ConfigurationError as exc:
+        console.print(f"[bold red]configuration error (nothing executed):[/] {exc}")
+        raise typer.Exit(EXIT_CONFIG) from None
+    console.print("[bold]1/4 preflight OK[/]; [bold]2/4 provider readiness probe[/]")
+    if not _probe_and_record(cfg):
+        console.print("[bold red]launch stopped: provider readiness probe failed; no runs were started.[/]")
+        raise typer.Exit(EXIT_PROBE_FAILED)
+    console.print("[bold]3/4 experiment[/]")
+    try:
+        report = execute_experiment(cfg, on_run=_print_run)
+    except ConfigurationError as exc:
+        console.print(f"[bold red]configuration error (no runs attempted):[/] {exc}")
+        raise typer.Exit(EXIT_CONFIG) from None
+    console.print(f"execution: status={report.status}" + (f" ({report.reason})" if report.reason else ""))
+    console.print("[bold]4/4 summary + acceptance[/]")
+    summarize_cmd(report.out_dir, split_configs=False, control="benign_control")
+    result = check_acceptance(report.out_dir)
+    (report.out_dir / "acceptance.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    console.print(f"acceptance verdict: {result['verdict']} -> {report.out_dir / 'acceptance.json'}")
+    if report.status in ("aborted", "budget_exhausted"):
+        raise typer.Exit(EXIT_ABORTED)
+    if report.status == "incomplete":
+        raise typer.Exit(EXIT_INCOMPLETE)
+    if result["verdict"] == "rejected":
+        raise typer.Exit(EXIT_REJECTED)
 
 
 @app.command("check-acceptance")
 def check_acceptance_cmd(exp_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False)]) -> None:
-    """Evaluate pilot acceptance criteria A1-A10 from artifacts; write acceptance.json."""
+    """Evaluate pilot acceptance criteria A1-A12 from artifacts; write acceptance.json."""
     result = check_acceptance(exp_dir)
     (exp_dir / "acceptance.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     table = Table(title=f"Acceptance: {result['verdict']}")
@@ -265,9 +321,28 @@ def summarize_cmd(
         console.print(f"[bold red]{exc}[/]")
         raise typer.Exit(EXIT_ABORTED) from None
     _print_paired(paired)
+    refusals = refusal_report(metrics)
+    _print_refusals(refusals)
     (exp_dir / "summary.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     (exp_dir / "paired.json").write_text(json.dumps(paired, indent=2), encoding="utf-8")
-    console.print(f"wrote {exp_dir / 'summary.json'} and {exp_dir / 'paired.json'}")
+    (exp_dir / "refusals.json").write_text(json.dumps(refusals, indent=2), encoding="utf-8")
+    console.print(f"wrote {exp_dir / 'summary.json'}, {exp_dir / 'paired.json'} and {exp_dir / 'refusals.json'}")
+
+
+def _print_refusals(report: dict[str, list[dict[str, Any]]]) -> None:
+    if not any(r["pre_exposure_refusal"]["k"] or r["post_exposure_refusal"]["k"] for r in report["by_variant"]):
+        return
+    table = Table(title="Provider refusals (valid runs; reported separately from attack metrics)")
+    for col in ("model", "condition", "valid", "pre-exposure refusal", "post-exposure refusal", "eligible",
+                "categories"):
+        table.add_column(col)
+    for r in report["by_condition"]:
+        table.add_row(r["model"], r["group"], str(r["valid_runs"]), _rate(r["pre_exposure_refusal"]),
+                      _rate(r["post_exposure_refusal"]), str(r["susceptibility_eligible"]),
+                      ", ".join(f"{k}={v}" for k, v in r["refusal_categories"].items()) or "-")
+    console.print(table)
+    console.print("[dim]Pre-exposure refusals are operationally valid but not eligible for attack-susceptibility "
+                  "analysis: the model never observed the payload.[/]")
 
 
 def _rate(d: dict[str, Any] | None) -> str:

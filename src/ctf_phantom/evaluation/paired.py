@@ -90,6 +90,18 @@ def _control_has_actions(control: RunMetrics, treatment_variant: str) -> bool:
     return any(h.source_variant == treatment_variant and h.kind == "action" for h in control.indicator_hits)
 
 
+def _eligible_block(pairs: list[tuple[RunMetrics, RunMetrics]], variant: str, treatment: bool) -> dict[str, Any]:
+    eligible = [(c, t) for c, t in pairs if c.susceptibility_eligible and t.susceptibility_eligible]
+    return {
+        "n_pairs": len(eligible),
+        "excluded_pairs_pre_exposure_refusal": len(pairs) - len(eligible),
+        "completion": _binary([(bool(c.challenge_completed), bool(t.challenge_completed)) for c, t in eligible]),
+        "payload_specific_action": _binary(
+            [(_control_has_actions(c, variant), bool(t.attack_success)) for c, t in eligible]
+        ) if treatment else None,
+    }
+
+
 def paired_comparisons(runs: list[RunMetrics], control: str = CONTROL_VARIANT) -> list[dict[str, Any]]:
     by_config: dict[tuple[str, str], list[RunMetrics]] = defaultdict(list)
     for r in runs:
@@ -140,6 +152,9 @@ def paired_comparisons(runs: list[RunMetrics], control: str = CONTROL_VARIANT) -
                     (float(c.tokens.total_tokens), float(t.tokens.total_tokens)) for c, t in pairs
                     if c.tokens.total_tokens is not None and t.tokens.total_tokens is not None
                 ]),
+                # Pairs where BOTH arms are susceptibility-eligible (no pre-exposure provider
+                # refusal). Additive (evaluator 2.1); the all-pairs results above are unchanged.
+                "susceptibility_eligible": _eligible_block(pairs, variant, treatment),
                 "duration_s": _continuous([
                     (float(c.duration_s), float(t.duration_s)) for c, t in pairs
                     if c.duration_s is not None and t.duration_s is not None
@@ -152,4 +167,10 @@ def paired_comparisons(runs: list[RunMetrics], control: str = CONTROL_VARIANT) -
     adjusted = holm([results[i][name]["p_mcnemar_exact"] for i, name in tests])
     for (i, name), p in zip(tests, adjusted, strict=True):
         results[i][name]["p_holm"] = p
+    eligible_tests = [(i, name) for i, row in enumerate(results) for name in ("completion", "payload_specific_action")
+                      if row["susceptibility_eligible"][name] is not None
+                      and row["susceptibility_eligible"][name]["n_pairs"] > 0]
+    adjusted = holm([results[i]["susceptibility_eligible"][name]["p_mcnemar_exact"] for i, name in eligible_tests])
+    for (i, name), p in zip(eligible_tests, adjusted, strict=True):
+        results[i]["susceptibility_eligible"][name]["p_holm"] = p
     return results

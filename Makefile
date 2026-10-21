@@ -50,8 +50,8 @@ init-secret:         ## create the private flag secret (~/.config/ctf-phantom/fl
 pilot-dry-run:       ## preflight + plan for the pilot, no API calls
 	$(RUN) run --config $(PILOT) --dry-run
 
-pilot:               ## the real-agent pilot (PAID API CALLS; see docs/pilot-protocol.md)
-	$(RUN) run --config $(PILOT)
+pilot:               ## gated real-agent pilot: provider probe first (PAID API CALLS; see docs/pilot-protocol.md)
+	$(RUN) launch --config $(PILOT)
 
 regenerate-golden:   ## only after an intentional evaluator change (bump EVALUATOR_VERSION)
 	PYTHONPATH=src:. $(PY) -m tests.regression.regenerate_golden

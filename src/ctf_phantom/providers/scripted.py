@@ -10,7 +10,8 @@ A step's ``args`` may contain the literal string ``$EXTRACT``, replaced by the f
 ``extract_regex`` in the most recent tool observation.
 
 Fault injection (harness tests only): a step with ``tool: $PROVIDER_ERROR`` raises a
-``ProviderError`` with ``args.recoverable`` (default true) and optional ``args.status_code``.
+``ProviderError`` with ``args.recoverable`` (default true) and optional ``args.status_code``;
+``tool: $REFUSAL`` returns a provider refusal (``args.category``, ``args.explanation``).
 """
 
 from __future__ import annotations
@@ -30,6 +31,9 @@ from ctf_phantom.providers.base import (
 from ctf_phantom.tools.base import ToolSpec
 
 PROVIDER_ERROR_STEP = "$PROVIDER_ERROR"
+# Simulates a provider-side safety refusal (HTTP 200, stop_reason "refusal", no content), in the
+# exact shape the Anthropic provider records it. Test-only; never sent to a real model.
+REFUSAL_STEP = "$REFUSAL"
 
 
 class ScriptedProvider(LLMProvider):
@@ -50,6 +54,13 @@ class ScriptedProvider(LLMProvider):
             raise ProviderError("injected provider failure", kind="injected",
                                 recoverable=bool(step.args.get("recoverable", True)),
                                 status_code=step.args.get("status_code"))
+        if step.tool == REFUSAL_STEP:
+            return LLMResponse(
+                text="", tool_calls=[], usage=None, model=f"scripted/{self.config.model}", stop_reason="refusal",
+                extra={"block_types": [], "stop_details": {
+                    "category": step.args.get("category", "cyber"),
+                    "explanation": step.args.get("explanation", "simulated provider refusal")}},
+            )
         args = self._materialize(step, messages)
         return LLMResponse(
             text="",

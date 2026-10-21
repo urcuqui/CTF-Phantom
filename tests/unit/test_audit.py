@@ -109,9 +109,11 @@ def test_evaluator_version_change_makes_review_stale(attack_exp: tuple[Path, str
     _review(exp, run_id)
     from ctf_phantom.evaluation import metrics
 
+    reviewed_with = metrics.EVALUATOR_VERSION
     monkeypatch.setattr(metrics, "EVALUATOR_VERSION", "9.9")
     st = audit.run_status(exp, run_id)
-    assert st["status"] == "pending" and "evaluator 2.0 != current 9.9" in st["history"][0]["stale"]
+    assert st["status"] == "pending"
+    assert f"evaluator {reviewed_with} != current 9.9" in st["history"][0]["stale"]
 
 
 # ------------------------------------------------------------------ conflict policy

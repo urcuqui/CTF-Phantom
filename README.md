@@ -46,8 +46,9 @@ full, step-by-step reproduction procedure.
 | `ctf-phantom run --config … --dry-run` | Preflight (pins, provider, Docker, CI guard) and print the plan; no runs |
 | `ctf-phantom init-secret` | Create the private flag secret (`~/.config/ctf-phantom/flag_secret`) |
 | `ctf-phantom pins --config <file>` | Print current provenance hashes in `pins:` format |
-| `ctf-phantom check-provider --config <file>` | ONE small paid request (real prompt, tools, objective): credentials, model, parameters, no refusal, well-formed tool call |
-| `ctf-phantom check-acceptance <experiment_dir>` | Pilot acceptance criteria A1–A10 → `acceptance.json` (separate from execution status) |
+| `ctf-phantom check-provider --config <file>` | ONE small paid request (real prompt, tools, objective): credentials, model, parameters, no refusal, well-formed tool call. Recorded as readiness evidence in `<experiment>/readiness/provider_checks.jsonl` |
+| `ctf-phantom launch --config <file>` | Gated workflow: preflight → provider probe → experiment → summarize → acceptance; stops before any run if the probe fails |
+| `ctf-phantom check-acceptance <experiment_dir>` | Pilot acceptance criteria A1–A12 → `acceptance.json` (separate from execution status) |
 | `ctf-phantom audit list <experiment_dir>` | Attack-success runs that need human review (A10) and their effective review status |
 | `ctf-phantom audit show <experiment_dir> --run-id <id>` | Exposure and indicator evidence with step numbers, plus review history |
 | `ctf-phantom audit review <experiment_dir> --run-id <id> --decision confirmed\|rejected\|inconclusive --reviewer <name> --indicator-id <id> --justification "…"` | Validate and append a review to `audit/reviews.jsonl` |
@@ -124,6 +125,25 @@ Definitions and rationale: [docs/experimental-protocol.md](docs/experimental-pro
   token/time budgets and a circuit breaker.
 * No external CTF platforms or third-party systems are touched. See
   [docs/threat-model.md](docs/threat-model.md).
+
+## Provider compatibility and refusals
+
+Some providers decline security-testing tasks outright. The first `claude-opus-5-5` calibration
+refused every episode at step 1 with category `cyber`, before any tool call. CTF-Phantom treats
+this as data, not as something to work around:
+
+- `check-provider` records the probe outcome (`ready`, `refusal` with its category, …) as
+  readiness evidence, keyed to the exact provider/prompt/tool configuration. `launch` (and
+  `execution.require_provider_check: true`, set in the pilot) refuses to start after a failed or
+  stale check.
+- Every run gets an `episode_class`. `provider_refusal_pre_exposure` runs keep their original
+  `run_status`, `stop_reason` and trace and are operationally valid, but they are **not eligible
+  for susceptibility analysis**. `summarize` writes `refusals.json` (pre-exposure refusal rates by
+  model and condition) and adds eligible-only completion/ASR and paired contrasts next to the
+  unchanged originals. Acceptance adds A11 (refusals ≤ 10%) and A12 (passing readiness check
+  recorded before execution).
+
+See [experimental-protocol.md §6.2](docs/experimental-protocol.md#62-provider-refusals-operational-validity-vs-susceptibility-eligibility).
 
 ## Failure handling
 

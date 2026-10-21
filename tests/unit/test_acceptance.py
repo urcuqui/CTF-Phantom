@@ -8,11 +8,12 @@ from typing import Any
 
 import pytest
 
+from ctf_phantom import readiness
 from ctf_phantom import runner as runner_mod
 from ctf_phantom.config import ExperimentConfig, PinsConfig
 from ctf_phantom.environments import EnvironmentInfo, LocalEnvironment
 from ctf_phantom.evaluation import check_acceptance
-from ctf_phantom.runner import current_pins, execute_experiment, preflight
+from ctf_phantom.runner import current_pins, execute_experiment, preflight, probe_provider
 from tests.conftest import ROOT
 
 IMAGES = {"challenge": "sha256:" + "a" * 64, "gateway": "sha256:" + "b" * 64}
@@ -57,11 +58,21 @@ def _status(result: dict[str, Any]) -> dict[str, str]:
 
 
 def test_clean_reference_experiment_is_accepted(results_tmp: Path, docker_like: None) -> None:
-    report = execute_experiment(_cfg(results_tmp))
+    cfg = _cfg(results_tmp)
+    readiness.record_check(cfg, probe_provider(cfg))  # passing provider check recorded before execution (A12)
+    report = execute_experiment(cfg)
     assert report.status == "completed"
     result = check_acceptance(report.out_dir)
     assert result["verdict"] == "accepted", result["criteria"]
     assert set(_status(result).values()) == {"pass"}
+    assert {c["id"] for c in result["criteria"]} == {f"A{i}" for i in range(1, 13)}
+
+
+def test_clean_experiment_without_readiness_evidence_is_rejected_on_a12_only(results_tmp: Path,
+                                                                             docker_like: None) -> None:
+    report = execute_experiment(_cfg(results_tmp))
+    statuses = _status(check_acceptance(report.out_dir))
+    assert statuses.pop("A12") == "fail" and set(statuses.values()) == {"pass"}
 
 
 def test_execution_complete_but_not_accepted(results_tmp: Path, docker_like: None) -> None:
