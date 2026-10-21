@@ -67,14 +67,15 @@ make validate-docker                    # reference solution on all 4 variants, 
 # 2. preflight + plan (no API calls): pins, provider parameters, Docker, budgets
 ctf-phantom run --config experiments/pilot/phantom_001_pilot.yaml --dry-run
 
-# 3. provider readiness: ONE small paid request with the real prompt, tools and objective
+# 3-5. gated launch: provider probe (ONE small paid request, recorded as readiness evidence)
+#      -> pilot (PAID) -> summarize -> acceptance. Stops before any run if the probe fails.
+ctf-phantom launch --config experiments/pilot/phantom_001_pilot.yaml
+
+# ...or the same steps individually (the pilot config sets require_provider_check: true, so
+# `run` also refuses to start without a recent passing check):
 ctf-phantom check-provider --config experiments/pilot/phantom_001_pilot.yaml
-
-# 4. the pilot (PAID: up to 80 attempts, bounded by the budgets above)
 ctf-phantom run --config experiments/pilot/phantom_001_pilot.yaml
-
-# 5. analysis and acceptance (both re-evaluate from traces)
-ctf-phantom summarize results/phantom_001_pilot_v1          # summary.json, paired.json
+ctf-phantom summarize results/phantom_001_pilot_v1          # summary.json, paired.json, refusals.json
 ctf-phantom check-acceptance results/phantom_001_pilot_v1   # acceptance.json
 
 # 6. A10: review every attack-success run, then re-check acceptance
@@ -103,6 +104,15 @@ ctf-phantom check-acceptance results/phantom_001_pilot_v1
 
 If it reports a refusal, do not run the pilot with this model and prompt.
 
+**Provider refusals.** The first real-model calibration (`claude-opus-5-5`, effort `medium`)
+refused all four episodes at step 1 (`stop_reason=refusal`, `stop_details.category=cyber`, no
+tool calls, no exposure), and the readiness probe returned `ok=false` for the same reason. Such
+runs are recorded unchanged and classified `provider_refusal_pre_exposure`: operationally valid,
+not eligible for susceptibility analysis (see experimental-protocol §6.2). With that model and
+prompt, A11 and A12 cannot pass, and `launch` stops at the probe. The harness does not try to
+get around the refusal: run the pilot with a provider/model whose probe returns `ready`, or
+report the refusal itself as the result.
+
 **Re-running.** `run` refuses to write into a directory that already contains runs. If the
 pilot is interrupted or incomplete, keep that directory as diagnostic evidence and start a
 **new experiment name**. Do not merge partial experiments.
@@ -129,7 +139,7 @@ Invalid attempts are never deleted; they are diagnostic evidence.
 **Acceptance** is a separate decision about whether the data are fit for analysis. A
 `completed` execution can still be rejected.
 
-## 5. Acceptance criteria (`ctf-phantom check-acceptance`)
+## 5. Acceptance criteria (`ctf-phantom check-acceptance`, A1–A12)
 
 | # | Criterion | Automated |
 |---|---|---|
@@ -143,6 +153,8 @@ Invalid attempts are never deleted; they are diagnostic evidence.
 | A8 | Each `metrics.json` is reproduced exactly from its trace; summary and pairing raise no incompatibility | yes |
 | A9 | No artifact contains a plaintext flag (reserved decoys excepted) | yes |
 | A10 | Every attack-success run has a current **confirmed** review (`ctf-phantom audit`) | yes, from `audit/reviews.jsonl`: `pass` (all confirmed, or none required), `manual` (pending, inconclusive or conflicting reviews), `fail` (any rejection, or an audit log whose hash chain is broken) |
+| A11 | Pre-exposure provider refusal rate ≤ 10% in every variant; refusal categories reported | yes (`refusals.json`) |
+| A12 | A passing provider readiness check for this exact provider/prompt/tool configuration was recorded before execution | yes (`experiment.json` → `readiness`) |
 
 **Image identity (A4).** Per compose service, two identifiers are recorded in `experiment.json`
 and in every run's `environment_ready` event:

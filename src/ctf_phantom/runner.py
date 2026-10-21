@@ -53,7 +53,7 @@ from ctf_phantom.challenges import (
     load_challenge,
     load_flag_secret,
 )
-from ctf_phantom.config import ExperimentConfig
+from ctf_phantom.config import ExperimentConfig, experiment_dir
 from ctf_phantom.environments import (
     BackendUnavailableError,
     ChallengeEnvironment,
@@ -66,19 +66,15 @@ from ctf_phantom.environments import (
 )
 from ctf_phantom.evaluation import RunMetrics, evaluate_events
 from ctf_phantom.hashing import sha256_json, sha256_text
-from ctf_phantom.paths import project_root, results_dir
+from ctf_phantom.paths import project_root
 from ctf_phantom.providers import LLMProvider, Message, ProviderError, build_provider
 from ctf_phantom.status import ConfigurationError, RunStatus
-from ctf_phantom.tools import HttpTool, SubmitFlagTool, TerminateTool, ToolSpec
-from ctf_phantom.tools.control import SUBMIT_FLAG_SPEC, TERMINATE_SPEC
-from ctf_phantom.tools.http import HTTP_REQUEST_SPEC
+from ctf_phantom.tools import TOOL_SPECS, HttpTool, SubmitFlagTool, TerminateTool
 from ctf_phantom.tracing import EventType, TraceRecorder
 
 FLAG_DERIVATION = "hmac-sha256/v2"
 FLAG_PLACEHOLDER = "[REDACTED:flag]"
 SESSION_PLACEHOLDER = "[REDACTED:session_secret]"
-# The victim's fixed tool surface. Its hash is recorded per run and can be pinned.
-TOOL_SPECS: tuple[ToolSpec, ...] = (HTTP_REQUEST_SPEC, SUBMIT_FLAG_SPEC, TERMINATE_SPEC)
 PAID_RUNS_ENV = "CTF_PHANTOM_ALLOW_PAID_RUNS"
 
 
@@ -246,11 +242,6 @@ def run_order(cfg: ExperimentConfig) -> list[tuple[int, str]]:
             rng.shuffle(block)
         order.extend((rep, v) for v in block)
     return order
-
-
-def experiment_dir(cfg: ExperimentConfig) -> Path:
-    base = Path(cfg.output_dir) if cfg.output_dir else results_dir()
-    return base / cfg.name
 
 
 def preflight(cfg: ExperimentConfig, *, flag_secret: FlagSecret | None = None,
@@ -529,6 +520,11 @@ def _budget_block(cfg: ExperimentConfig, tokens_used: int, elapsed_s: float) -> 
 def execute_experiment(cfg: ExperimentConfig, *, on_run: Any = None,
                        flag_secret: FlagSecret | None = None) -> ExperimentReport:
     challenge, secret = preflight(cfg, flag_secret=flag_secret)
+    from ctf_phantom import readiness  # local import: readiness depends on config/tools only
+
+    provider_check = readiness.latest_check(cfg)
+    if cfg.execution.require_provider_check and (problem := readiness.readiness_problem(cfg)) is not None:
+        raise ConfigurationError(f"provider readiness gate: {problem}")
     out_dir = experiment_dir(cfg)
     if out_dir.exists() and ((out_dir / "runs.jsonl").exists() or any(out_dir.glob("*/trace.jsonl"))):
         raise ConfigurationError(
@@ -551,6 +547,12 @@ def execute_experiment(cfg: ExperimentConfig, *, on_run: Any = None,
         "environment_image_content": image_content,  # content IDs: rebuild-stable, compared by A4
         "created_at": datetime.now(UTC).isoformat(),
         "status": "running",
+        # First-class readiness evidence: the provider check this experiment was launched on.
+        "readiness": {
+            "probe_key": readiness.probe_key(cfg),
+            "required": cfg.execution.require_provider_check,
+            "provider_check": provider_check,
+        },
     }
     meta_path = out_dir / "experiment.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -667,14 +669,28 @@ def probe_provider(cfg: ExperimentConfig) -> dict[str, Any]:
     try:
         resp = provider.complete(profile.system, [Message(role="user", content=objective)], list(TOOL_SPECS))
     except ProviderError as exc:
-        return result | {"ok": False, "error": str(exc), "recoverable": exc.recoverable,
-                         "status_code": exc.status_code, "latency_s": round(time.monotonic() - started, 3)}
+        return result | {"ok": False, "outcome": "provider_error", "error": str(exc),
+                         "recoverable": exc.recoverable, "status_code": exc.status_code,
+                         "latency_s": round(time.monotonic() - started, 3)}
     known = {t.name for t in TOOL_SPECS}
     calls = [{"name": c.name, "arguments": c.arguments,
               "well_formed": c.name in known and "__invalid_json__" not in c.arguments} for c in resp.tool_calls]
     refused = resp.stop_reason == "refusal"
+    details = (resp.extra or {}).get("stop_details") or {}
+    if refused:
+        outcome = "refusal"
+    elif not calls:
+        outcome = "no_tool_call"
+    elif not all(c["well_formed"] for c in calls):
+        outcome = "malformed_tool_call"
+    else:
+        outcome = "ready"
     return result | {
-        "ok": not refused and bool(calls) and all(c["well_formed"] for c in calls),
+        "ok": outcome == "ready",
+        "outcome": outcome,
+        "refusal_category": details.get("category") if refused else None,
+        "refusal_explanation": (str(details.get("explanation"))[:300]
+                                if refused and details.get("explanation") else None),
         "reported_model": resp.model,
         "stop_reason": resp.stop_reason,
         "refusal": refused,

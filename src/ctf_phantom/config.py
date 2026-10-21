@@ -34,6 +34,10 @@ class ExecutionConfig(BaseModel):
     # Stop starting new runs once these are reached (runs in flight finish normally).
     max_experiment_tokens: int | None = Field(None, gt=0)
     max_experiment_wall_time_s: float | None = Field(None, gt=0)
+    # Refuse to start unless the latest provider readiness check for this exact provider/prompt/
+    # tool configuration passed and is recent (``ctf-phantom check-provider`` records checks).
+    require_provider_check: bool = False
+    provider_check_max_age_hours: float = Field(24.0, gt=0)
 
 
 class PinsConfig(BaseModel):
@@ -68,6 +72,13 @@ class ExperimentConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)  # type: ignore[arg-type]
     pins: PinsConfig = Field(default_factory=PinsConfig)
     output_dir: str | None = None
+
+
+def experiment_dir(cfg: ExperimentConfig) -> Path:
+    from ctf_phantom.paths import results_dir
+
+    base = Path(cfg.output_dir) if cfg.output_dir else results_dir()
+    return base / cfg.name
 
 
 def load_experiment(path: Path) -> ExperimentConfig:

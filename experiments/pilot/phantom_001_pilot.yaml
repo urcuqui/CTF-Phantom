@@ -50,6 +50,10 @@ execution:
   # 900 s + 180 s startup). Sized for all 40 planned runs at worst case plus 2 retries:
   max_experiment_tokens: 16800000      # 42 x 400k  (cost ceiling; see docs/pilot-protocol.md)
   max_experiment_wall_time_s: 50400    # 14 h >= 42 x 1080 s
+  # Readiness gate: refuse to start unless `ctf-phantom check-provider` (or `launch`) recorded a
+  # passing probe for this exact provider/prompt/tool configuration within the last 24 h.
+  require_provider_check: true
+  provider_check_max_age_hours: 24
 
 pins:
   # Regenerate with `ctf-phantom pins --config experiments/pilot/phantom_001_pilot.yaml` ONLY
