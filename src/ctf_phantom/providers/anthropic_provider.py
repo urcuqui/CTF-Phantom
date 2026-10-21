@@ -7,6 +7,7 @@ victim model mid-episode and confound cross-model comparisons. Refusals surface 
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ctf_phantom.providers.base import (
@@ -17,6 +18,7 @@ from ctf_phantom.providers.base import (
     ProviderError,
     TokenUsage,
     ToolCall,
+    is_recoverable_status,
 )
 from ctf_phantom.tools.base import ToolSpec
 
@@ -63,15 +65,39 @@ def to_anthropic_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
     return [t.as_dict() for t in tools]
 
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+# Models that reject non-default sampling parameters (temperature/top_p/top_k) with a 400.
+_NO_SAMPLING = re.compile(r"^claude-(opus-(4-[78]|5)|sonnet-5|fable-5|mythos-5|haiku-5)")
+# The Python SDK refuses non-streaming requests whose max_tokens implies > 10 min (~21,333 tokens).
+MAX_NON_STREAMING_TOKENS = 21_333
+
+
 class AnthropicProvider(LLMProvider):
     name = "anthropic"
+
+    def config_problems(self) -> list[str]:
+        c = self.config
+        problems = []
+        if not c.model:
+            problems.append("model is required")
+        if c.effort is not None and c.effort not in EFFORT_LEVELS:
+            problems.append(f"effort {c.effort!r} not in {EFFORT_LEVELS}")
+        if c.temperature is not None and _NO_SAMPLING.match(c.model):
+            problems.append(f"{c.model} rejects sampling parameters; leave temperature unset")
+        if c.max_tokens > MAX_NON_STREAMING_TOKENS:
+            problems.append(f"max_tokens {c.max_tokens} > {MAX_NON_STREAMING_TOKENS} requires streaming, "
+                            "which this provider does not use")
+        if c.seed is not None:
+            problems.append("the Anthropic API has no seed parameter; leave provider.seed unset")
+        return problems
 
     def __init__(self, config: ProviderConfig) -> None:
         super().__init__(config)
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ProviderError("install the 'anthropic' extra: pip install -e '.[anthropic]'") from exc
+            raise ProviderError("install the 'anthropic' extra: pip install -e '.[anthropic]'",
+                                recoverable=False, kind="configuration") from exc
         self._anthropic = anthropic
         self._client = anthropic.Anthropic(
             timeout=config.timeout_s,
@@ -102,12 +128,16 @@ class AnthropicProvider(LLMProvider):
         try:
             resp = self._client.messages.create(**params)
         except self._anthropic.APIStatusError as exc:
-            raise ProviderError(f"anthropic API error {exc.status_code}: {exc.message}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise ProviderError(f"anthropic connection error: {exc}") from exc
+            raise ProviderError(f"anthropic API error {exc.status_code}: {exc.message}",
+                                recoverable=is_recoverable_status(exc.status_code),
+                                status_code=exc.status_code) from exc
+        except self._anthropic.APIConnectionError as exc:  # includes timeouts
+            raise ProviderError(f"anthropic connection error: {exc}", recoverable=True,
+                                kind="connection") from exc
         except TypeError as exc:  # raised by the SDK when no credentials can be resolved
             raise ProviderError(
-                f"anthropic client misconfigured ({exc}); set ANTHROPIC_API_KEY or run `ant auth login`"
+                f"anthropic client misconfigured ({exc}); set ANTHROPIC_API_KEY or run `ant auth login`",
+                recoverable=False, kind="configuration",
             ) from exc
 
         text = "".join(b.text for b in resp.content if b.type == "text")

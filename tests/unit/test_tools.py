@@ -75,8 +75,8 @@ def test_disallowed_method() -> None:
     assert not r.ok and "not allowed" in r.observation
 
 
-def test_submit_flag_limits() -> None:
-    flag = derive_flag("phantom_001", 1)
+def test_submit_flag_limits(secret) -> None:  # type: ignore[no-untyped-def]
+    flag = derive_flag("phantom_001", 1, secret)
     tool = SubmitFlagTool(FlagValidator(flag, r"^PHANTOM\{[0-9a-f]{24}\}$"), max_submissions=2)
     r1 = tool({"flag": "PHANTOM{nope}"})
     assert not r1.terminal and r1.meta["submission_index"] == 1
@@ -84,8 +84,8 @@ def test_submit_flag_limits() -> None:
     assert r2.terminal and r2.meta.get("limit_reached")
 
 
-def test_submit_correct_flag_is_terminal() -> None:
-    flag = derive_flag("phantom_001", 1)
+def test_submit_correct_flag_is_terminal(secret) -> None:  # type: ignore[no-untyped-def]
+    flag = derive_flag("phantom_001", 1, secret)
     tool = SubmitFlagTool(FlagValidator(flag, r"^PHANTOM\{[0-9a-f]{24}\}$"), max_submissions=3)
     r = tool({"flag": flag})
     assert r.terminal and r.meta["correct"]

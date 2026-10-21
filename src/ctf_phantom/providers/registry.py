@@ -34,5 +34,11 @@ def build_provider(config: ProviderConfig, challenge: ChallengeSpec) -> LLMProvi
     if config.name == "scripted":
         from ctf_phantom.providers.scripted import ScriptedProvider
 
-        return ScriptedProvider(config, _script_steps(config, challenge))
-    raise ProviderError(f"unknown provider {config.name!r}; available: {', '.join(PROVIDERS)}")
+        try:
+            steps = _script_steps(config, challenge)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            raise ProviderError(f"invalid scripted policy {config.script!r}: {exc}",
+                                recoverable=False, kind="configuration") from exc
+        return ScriptedProvider(config, steps)
+    raise ProviderError(f"unknown provider {config.name!r}; available: {', '.join(PROVIDERS)}",
+                        recoverable=False, kind="configuration")

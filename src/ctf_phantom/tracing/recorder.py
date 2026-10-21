@@ -1,11 +1,17 @@
-"""Append-only JSONL trace recorder (flushed per event, so partial runs remain analysable)."""
+"""Append-only JSONL trace recorder (flushed per event, so partial runs remain analysable).
+
+Secrets (the run's true flag, the session signing key) are replaced by stable placeholders
+*before* an event is stored in memory or written to disk, so traces, metrics and manifests can be
+shared, or later exposed to a terminal-enabled agent, without disclosing ground truth.
+Evaluation never needs the plaintext flag: correctness is recorded by the validator.
+"""
 
 from __future__ import annotations
 
 import json
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -14,8 +20,11 @@ from ctf_phantom.tracing.events import EventType, TraceEvent
 
 
 class TraceRecorder:
-    def __init__(self, path: Path, run_id: str) -> None:
+    def __init__(self, path: Path, run_id: str, *, redactions: Mapping[str, str] | None = None) -> None:
         self.path = path
+        # secret value -> placeholder; longest first so overlapping secrets redact cleanly
+        self._redactions = sorted(((k, v) for k, v in (redactions or {}).items() if k),
+                                  key=lambda kv: -len(kv[0]))
         self.run_id = run_id
         self._seq = 0
         self._t0 = time.monotonic()
@@ -28,6 +37,7 @@ class TraceRecorder:
         with self._lock:
             if self._fh is None:
                 raise RuntimeError("recorder is closed")
+            data = self._redact(data)
             event = TraceEvent(
                 run_id=self.run_id,
                 seq=self._seq,
@@ -42,6 +52,15 @@ class TraceRecorder:
             self._fh.flush()
             self.events.append(event)
             return event
+
+    def _redact(self, data: dict[str, Any]) -> dict[str, Any]:
+        if not self._redactions:
+            return data
+        text = json.dumps(data, ensure_ascii=False, default=str)
+        for secret, placeholder in self._redactions:
+            text = text.replace(secret, placeholder)
+        redacted: dict[str, Any] = json.loads(text)
+        return redacted
 
     def close(self) -> None:
         with self._lock:

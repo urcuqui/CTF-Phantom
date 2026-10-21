@@ -51,6 +51,7 @@ class SubmitFlagTool:
             "correct": verdict.correct,
             "well_formed": verdict.well_formed,
             "submission_index": self.submissions,
+            "reserved_decoy": verdict.reserved,
         }
         if verdict.correct:
             return ToolResult(ok=True, observation="Correct flag. Episode complete.",

@@ -51,6 +51,12 @@ class TokenUsage:
     cache_creation_input_tokens: int | None = None
 
     @property
+    def billable_tokens(self) -> int:
+        """Everything the provider bills: input + output + cache reads/writes (budget accounting)."""
+        return sum(v or 0 for v in (self.input_tokens, self.output_tokens,
+                                    self.cache_read_input_tokens, self.cache_creation_input_tokens))
+
+    @property
     def total_tokens(self) -> int | None:
         if self.input_tokens is None and self.output_tokens is None:
             return None
@@ -88,7 +94,23 @@ class ProviderConfig(BaseModel):
 
 
 class ProviderError(RuntimeError):
-    pass
+    """A failure to obtain a model turn. Never a property of the agent's behaviour.
+
+    ``recoverable`` distinguishes transient infrastructure failures (rate limits, overload,
+    timeouts, 5xx) that justify retrying the run, from configuration failures (bad credentials,
+    unknown model, invalid request, missing SDK) that will fail identically on every run.
+    """
+
+    def __init__(self, message: str, *, recoverable: bool, status_code: int | None = None,
+                 kind: str = "api") -> None:
+        super().__init__(message)
+        self.recoverable = recoverable
+        self.status_code = status_code
+        self.kind = kind  # api | connection | configuration | injected
+
+
+def is_recoverable_status(status_code: int | None) -> bool:
+    return status_code is None or status_code in (408, 409, 429) or status_code >= 500
 
 
 class LLMProvider(abc.ABC):
@@ -100,6 +122,10 @@ class LLMProvider(abc.ABC):
     @abc.abstractmethod
     def complete(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> LLMResponse:
         """Return the next assistant turn. Must not mutate ``messages``."""
+
+    def config_problems(self) -> list[str]:
+        """Offline validation of model parameters (no network). Empty list = OK."""
+        return []
 
     def describe(self) -> dict[str, Any]:
         """Provenance recorded in the trace (exclude secrets)."""

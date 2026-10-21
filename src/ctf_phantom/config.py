@@ -21,6 +21,33 @@ class EnvironmentConfig(BaseModel):
     startup_timeout_s: float = 90.0
 
 
+class ExecutionConfig(BaseModel):
+    """Failure handling and experiment-level budgets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Attempts per (variant, repetition) when a run fails for a *recoverable* infrastructure
+    # reason. Retries reuse the same seed; every attempt keeps its own trace.
+    max_attempts_per_run: int = Field(2, ge=1)
+    # Circuit breaker: abort after this many consecutive failed attempts of any kind.
+    max_consecutive_failures: int = Field(3, ge=1)
+    # Stop starting new runs once these are reached (runs in flight finish normally).
+    max_experiment_tokens: int | None = Field(None, gt=0)
+    max_experiment_wall_time_s: float | None = Field(None, gt=0)
+
+
+class PinsConfig(BaseModel):
+    """Expected provenance hashes. Any mismatch aborts before the first run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_hash: str | None = None
+    variant_hashes: dict[str, str] | None = None
+    system_prompt_sha256: str | None = None
+    tool_specs_sha256: str | None = None
+    flag_secret_fingerprint: str | None = None
+
+
 class ExperimentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -30,12 +57,16 @@ class ExperimentConfig(BaseModel):
     variants: list[str] = Field(min_length=1)
     repetitions: int = Field(1, gt=0)
     seed: int = 1337
+    # Public domain-separation label for flag derivation. NOT a secret: flags are keyed by the
+    # private flag secret (see ctf_phantom.challenges.flags).
     flag_salt: str = DEFAULT_SALT
     # Randomise variant order within each repetition block (seeded) to spread temporal drift.
     shuffle_variants: bool = True
     environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)  # type: ignore[arg-type]
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)  # type: ignore[arg-type]
+    pins: PinsConfig = Field(default_factory=PinsConfig)
     output_dir: str | None = None
 
 

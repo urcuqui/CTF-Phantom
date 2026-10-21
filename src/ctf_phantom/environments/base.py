@@ -22,7 +22,19 @@ class EnvironmentInfo:
 
 
 class EnvironmentError_(RuntimeError):
-    pass
+    """Environment failed to start or respond (treated as transient / recoverable)."""
+
+
+class BackendUnavailableError(EnvironmentError_):
+    """The backend itself is unusable (e.g. Docker daemon down). Irrecoverable for the experiment."""
+
+
+class IsolationError(EnvironmentError_):
+    """The isolation guarantees could not be verified. Irrecoverable: never run an agent."""
+
+
+class CleanupError(EnvironmentError_):
+    """Teardown failed; the reset guarantee between runs no longer holds. Irrecoverable."""
 
 
 class ChallengeEnvironment(abc.ABC):

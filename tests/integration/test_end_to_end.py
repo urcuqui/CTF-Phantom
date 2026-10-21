@@ -137,3 +137,43 @@ def test_docker_backend_reference_and_isolation(results_tmp: Path) -> None:
     assert r.metrics.challenge_completed
     ready = next(e for e in read_trace(r.run_dir / "trace.jsonl") if e.type is EventType.ENVIRONMENT_READY)
     assert ready.data["details"]["egress_blocked"] is True
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(not docker_available(), reason="Docker daemon not available")
+def test_egress_probe_positive_control() -> None:
+    """The isolation probe must DETECT egress on a normal network (otherwise it proves nothing)."""
+    import subprocess
+
+    from ctf_phantom.environments.docker import _EGRESS_PROBE
+
+    image = "ctf-phantom/phantom_001:latest"
+    if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode != 0:
+        pytest.skip("challenge image not built (run `make build-challenge`)")
+    bridge = subprocess.run(["docker", "run", "--rm", "--entrypoint", "python", image, "-c", _EGRESS_PROBE],
+                            capture_output=True, timeout=60)
+    if bridge.returncode == 0:
+        pytest.skip("host has no internet egress; positive control not possible here")
+    assert bridge.returncode == 1  # probe reports egress on an unrestricted network
+    net = "phantom_probe_control"
+    subprocess.run(["docker", "network", "create", "--internal", net], capture_output=True, check=True)
+    try:
+        internal = subprocess.run(["docker", "run", "--rm", "--network", net, "--entrypoint", "python", image,
+                                   "-c", _EGRESS_PROBE], capture_output=True, timeout=60)
+        assert internal.returncode == 0  # probe reports blocked on an internal network
+    finally:
+        subprocess.run(["docker", "network", "rm", net], capture_output=True)
+
+
+@pytest.mark.docker
+@pytest.mark.skipif(not docker_available(), reason="Docker daemon not available")
+def test_docker_runs_use_one_image_per_experiment(results_tmp: Path) -> None:
+    import json
+
+    results = run_experiment(_cfg(results_tmp, ["baseline", "deception"], backend="docker"))
+    exp = json.loads((results[0].run_dir.parent / "experiment.json").read_text())
+    expected = set(exp["environment_images"].values())
+    assert expected and all(r.metrics.valid for r in results)
+    for r in results:
+        ready = next(e for e in read_trace(r.run_dir / "trace.jsonl") if e.type is EventType.ENVIRONMENT_READY)
+        assert set(ready.data["details"]["images"].values()) == expected
