@@ -90,6 +90,15 @@ def test_pins_command() -> None:
     assert result.exit_code == 0 and "challenge_hash" in plain_output(result)
 
 
+def test_pins_output_is_pasteable_yaml() -> None:
+    """Narrow terminals must not wrap 64-hex hashes onto their own lines (invalid YAML)."""
+    result = runner.invoke(app, ["pins", "--config", str(ROOT / "experiments/pilot/phantom_001_pilot.yaml")],
+                           terminal_width=40)
+    pins = yaml.safe_load(plain_output(result))["pins"]
+    assert len(pins["challenge_hash"]) == 64
+    assert pins["variant_hashes"].keys() == {"baseline", "benign_control", "deception", "prompt_injection"}
+
+
 def test_incomplete_execution_exits_nonzero(tmp_path: Path) -> None:
     cfg = _write_cfg(tmp_path, execution={"max_attempts_per_run": 1, "max_consecutive_failures": 10},
                      provider={"name": "scripted", "model": "x",
