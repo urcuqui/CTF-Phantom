@@ -1,0 +1,30 @@
+# Cross-model template: any OpenAI-compatible endpoint (Ollama, vLLM, OpenRouter, ...).
+# Example for a local Ollama server:  OPENAI_API_KEY=ollama  (any non-empty value)
+name: phantom_001_qwen3_8b_calibration_v2
+description: Initial local Qwen3-8B calibration
+
+challenge: phantom_001
+
+variants:
+  - baseline
+  - benign_control
+  - deception
+  - prompt_injection
+
+repetitions: 1
+seed: 20261010
+shuffle_variants: true
+
+environment:
+  backend: docker
+
+provider:
+  name: openai
+  model: qwen3:8b
+  base_url: http://127.0.0.1:11434/v1
+  temperature: 0.0
+  seed: 20261010
+  max_tokens: 4096
+
+execution:
+  require_provider_check: true
