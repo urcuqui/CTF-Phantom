@@ -12,7 +12,8 @@ from ctf_phantom import cli
 from tests.cli_helpers import plain_output
 from tests.conftest import ROOT
 
-DOCS = ["docs/pilot-protocol.md", "docs/reproducing-first-experiment.md", "README.md"]
+DOCS = ["docs/pilot-protocol.md", "docs/reproducing-first-experiment.md", "docs/qwen3-coder-qualification.md",
+        "README.md"]
 runner = CliRunner()
 
 

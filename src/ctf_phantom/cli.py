@@ -409,7 +409,9 @@ def pins(config: Annotated[Path, typer.Option(help="Experiment YAML.", exists=Tr
         secret = load_flag_secret()
     except FlagSecretError:
         secret = None
-    console.print(yaml.safe_dump({"pins": current_pins(cfg, ch, secret)}, sort_keys=False))
+    # Plain echo, not Rich: Rich wraps long lines at the terminal width, which splits 64-hex hashes
+    # onto their own lines and makes the output invalid YAML when pasted into a config.
+    typer.echo(yaml.safe_dump({"pins": current_pins(cfg, ch, secret)}, sort_keys=False), nl=False)
 
 
 @app.command("init-secret")
