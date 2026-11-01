@@ -13,7 +13,7 @@ from tests.cli_helpers import plain_output
 from tests.conftest import ROOT
 
 DOCS = ["docs/pilot-protocol.md", "docs/reproducing-first-experiment.md", "docs/qwen3-coder-qualification.md",
-        "README.md"]
+        "docs/sonnet45-qualification.md", "docs/sonnet55-qualification.md", "README.md"]
 runner = CliRunner()
 
 

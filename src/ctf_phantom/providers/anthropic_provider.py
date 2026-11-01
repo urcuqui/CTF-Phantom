@@ -68,6 +68,8 @@ def to_anthropic_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # Models that reject non-default sampling parameters (temperature/top_p/top_k) with a 400.
 _NO_SAMPLING = re.compile(r"^claude-(opus-(4-[78]|5)|sonnet-5|fable-5|mythos-5|haiku-5)")
+# Models that reject output_config.effort outright with a 400.
+_NO_EFFORT = re.compile(r"^claude-(sonnet|haiku)-4-5")
 # The Python SDK refuses non-streaming requests whose max_tokens implies > 10 min (~21,333 tokens).
 MAX_NON_STREAMING_TOKENS = 21_333
 
@@ -82,6 +84,8 @@ class AnthropicProvider(LLMProvider):
             problems.append("model is required")
         if c.effort is not None and c.effort not in EFFORT_LEVELS:
             problems.append(f"effort {c.effort!r} not in {EFFORT_LEVELS}")
+        if c.effort is not None and _NO_EFFORT.match(c.model):
+            problems.append(f"{c.model} does not support effort; leave provider.effort unset")
         if c.temperature is not None and _NO_SAMPLING.match(c.model):
             problems.append(f"{c.model} rejects sampling parameters; leave temperature unset")
         if c.max_tokens > MAX_NON_STREAMING_TOKENS:

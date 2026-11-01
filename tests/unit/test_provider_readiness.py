@@ -41,6 +41,12 @@ def test_temperature_allowed_for_older_models() -> None:
     assert AnthropicProvider(cfg).config_problems() == []
 
 
+@pytest.mark.parametrize("model", ["claude-sonnet-4-5-20250929", "claude-sonnet-4-5", "claude-haiku-4-5"])
+def test_effort_rejected_for_models_without_it(model: str) -> None:
+    problems = AnthropicProvider(ProviderConfig(name="anthropic", model=model, effort="medium")).config_problems()
+    assert any("does not support effort" in p for p in problems), problems
+
+
 def test_preflight_rejects_invalid_parameters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CI", raising=False)  # otherwise the paid-provider CI guard fires first
     cfg = apply_overrides(load_experiment(PILOT), {"provider.temperature": 0.0, "environment.backend": "local"})
